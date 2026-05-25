@@ -3,6 +3,7 @@ import { showAssets } from './assets.mjs';
 import { showLimitOrders } from './orders.mjs';
 import { runSignalSearch } from './signals.mjs';
 import { showSettingsMenu } from './settings.mjs';
+import { runWeb3Discovery } from './web3Discovery.mjs';
 
 export const mainMenuComposer = new Composer();
 
@@ -14,6 +15,7 @@ mainMenuComposer.command('start', async (ctx) => {
     .text('🔍 Поиск сигналов')
     .text('⚙️ Настройки')
     .text('🧠 AI-аналитика').row()
+    .text('🧬 Web3 top-10')
     .text('⚡ Позиции (фьючи)');
 
   await ctx.reply(
@@ -40,6 +42,9 @@ mainMenuComposer.on('message', async (ctx, next) => {
   }
   if (ctx.message.text === '🧠 AI-аналитика') {
     await ctx.reply('🤖 AI-аналитика в разработке. Скоро вы сможете получать прогнозы по выбранным монетам.');
+  }
+  if (ctx.message.text === '🧬 Web3 top-10') {
+    await runWeb3Discovery(ctx);
   }
   if (ctx.message.text === '⚡ Позиции (фьючи)') {
     await ctx.reply('⚡ Фьючерсные позиции — функционал в разработке (скоро).');
@@ -77,6 +82,9 @@ mainMenuComposer.callbackQuery(/^menu_/, async (ctx) => {
       break;
     case 'ai':
       await ctx.reply('🤖 AI-аналитика в разработке. Скоро вы сможете получать прогнозы по выбранным монетам.');
+      break;
+    case 'web3':
+      await runWeb3Discovery(ctx);
       break;
     case 'positions':
       await ctx.reply('⚡ Фьючерсные позиции — функционал в разработке (скоро).');
