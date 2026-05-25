@@ -276,14 +276,14 @@ export class WalletIntelService {
       holderWallets.push({ ...row, ...walletIntel, wallet: owner });
     }
 
+    const behavior = classifyTokenBehavior(token);
+    const highSupplyWallets = holderWallets.filter(wallet => wallet.pct >= HIGH_SUPPLY_SHARE);
     const devWallet = firstString(token.devWallet, holderWallets[0]?.wallet);
     const relatedWallets = unique([devWallet, ...highSupplyWallets.map(wallet => wallet.wallet)]);
     const [devWalletIntel, relatedHistories] = await Promise.all([
       devWallet ? this.analyzeSolanaWallet(devWallet) : Promise.resolve(null),
       Promise.all(relatedWallets.map(wallet => this.fetchDevWalletHistory(wallet))),
     ]);
-    const behavior = classifyTokenBehavior(token);
-    const highSupplyWallets = holderWallets.filter(wallet => wallet.pct >= HIGH_SUPPLY_SHARE);
     const fundingCluster = detectFundingCluster({ highSupplyWallets, behavior, token });
     const transferPattern = classifyTransferPattern({ highSupplyWallets, holderDistribution, behavior });
     const tokenCreatedAtSec = Date.now() / 1000 - toNumber(token.ageMinutes, 0) * 60;
