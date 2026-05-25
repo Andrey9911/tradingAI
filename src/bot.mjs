@@ -4,6 +4,7 @@ import {assetsComposer} from './composers/assets.mjs'
 import {ordersComposer} from './composers/orders.mjs'
 import {authComposer} from './composers/auth.mjs'
 import {settingsComposer} from './composers/settings.mjs'
+import {web3DiscoveryComposer} from './composers/web3Discovery.mjs'
 
 // ... ваши импорты композеров
 
@@ -37,6 +38,7 @@ export function createBot(token) {
   bot.use(assetsComposer);
   bot.use(ordersComposer);
   bot.use(settingsComposer);
+  bot.use(web3DiscoveryComposer);
   bot.use(authComposer);
 
   return bot;
