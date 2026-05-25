@@ -348,7 +348,11 @@ ${rawText.slice(0, 12000)}
 <<<START>>>
 {...}
 <<<END>>>.`;
-=======
+  }
+
+
+  /**
+<<<<<<< HEAD
    * AI-анализ Web3 discovery token после первичных фильтров ликвидности/риска.
    * @returns {Promise<{ verdict: 'BUY'|'WAIT'|'AVOID', reason: string, riskLevel: 'LOW'|'MEDIUM'|'HIGH' }>}
    */
@@ -375,35 +379,42 @@ ${JSON.stringify({
 
 Проанализируй smart money/whale/dev-wallet признаки по доступным метрикам, rugpull-риск, ликвидность, buy/sell pressure, возраст и социальный/launch контекст по источнику.
 Ответь СТРОГО одной строкой JSON без markdown: {"verdict":"BUY"|"WAIT"|"AVOID","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"кратко по-русски, 1-2 предложения"}`;
->>>>>>> b9c3bdc503f225c428ebf7b0b911ed93418efe3a
 
-    try {
-      const data = await this.chatWithModelFallback({
-        messages: [{ role: 'user', content: prompt }],
-<<<<<<< HEAD
-        max_tokens: 500,
-        temperature: 0.15,
-      });
-      const raw = data?.choices?.[0]?.message?.reasoning || '';
-      const cleaned = raw
-        .replace(/```json\s*/gi, '')
-        .replace(/```\s*/g, '')
-        .trim();
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      console.log(data.choices[0].message);
-      
-      if (!jsonMatch) throw new Error('Нет JSON в ответе модели');
-      return JSON.parse(jsonMatch[0]);
+
+try {
+  const data = await this.chatWithModelFallback({
+    messages: [{ role: 'user', content: prompt }],
+    max_tokens: 220,
+    temperature: 0.45,
+  });
+  const text = data?.choices?.[0]?.message?.content?.trim();
+  if (text) return text.slice(0, 900);
+  const raw = data.choices[0].message.content || '';
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return { verdict: 'WAIT', riskLevel: 'MEDIUM', reason: 'ИИ не вернул структурированный ответ.' };
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      const verdictRaw = String(parsed.verdict || '').toUpperCase();
+      const riskRaw = String(parsed.riskLevel || '').toUpperCase();
+      return {
+        verdict: verdictRaw === 'BUY' ? 'BUY' : verdictRaw === 'AVOID' ? 'AVOID' : 'WAIT',
+        riskLevel: riskRaw === 'LOW' ? 'LOW' : riskRaw === 'HIGH' ? 'HIGH' : 'MEDIUM',
+        reason: String(parsed.reason || '').slice(0, 500),
+      };
     } catch (err) {
-      console.error('parseTelegramSignalPost:', err);
-      throw err;
+      console.error('evaluateDiscoveredToken:', err);
+      return { verdict: 'WAIT', riskLevel: 'MEDIUM', reason: 'Ошибка AI-анализа discovery token.' };
     }
   }
+
+
 
   /**
    * Краткое объяснение на русском (не менять вердикт — он уже вычислен правилами).
    */
-  async explainSignalAnalysisNarrative(ctx) {
+async explainSignalAnalysisNarrative(ctx) {
     const prompt = `Ты крипто-аналитик. Вердикт и оценка уже рассчитаны детерминированно — их НЕЛЬЗЯ менять, только объясни почему так может выглядеть рынок.
 
 Символ: ${ctx.symbol}, сторона: ${ctx.side}
@@ -431,29 +442,5 @@ SL в сигнале: ${ctx.hasSl ? 'да' : 'нет'}
     }
     return 'Краткий вывод сформирован по метрикам; нейросеть не смогла добавить пояснение.';
   }
-=======
-        max_tokens: 700,
-        temperature: 0.3,
-      }, onStatusUpdate);
 
-      const raw = data.choices?.[0]?.message?.content || '';
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        return { verdict: 'WAIT', riskLevel: 'MEDIUM', reason: 'ИИ не вернул структурированный ответ.' };
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-      const verdictRaw = String(parsed.verdict || '').toUpperCase();
-      const riskRaw = String(parsed.riskLevel || '').toUpperCase();
-      return {
-        verdict: verdictRaw === 'BUY' ? 'BUY' : verdictRaw === 'AVOID' ? 'AVOID' : 'WAIT',
-        riskLevel: riskRaw === 'LOW' ? 'LOW' : riskRaw === 'HIGH' ? 'HIGH' : 'MEDIUM',
-        reason: String(parsed.reason || '').slice(0, 500),
-      };
-    } catch (err) {
-      console.error('evaluateDiscoveredToken:', err);
-      return { verdict: 'WAIT', riskLevel: 'MEDIUM', reason: 'Ошибка AI-анализа discovery token.' };
-    }
-  }
->>>>>>> b9c3bdc503f225c428ebf7b0b911ed93418efe3a
 }

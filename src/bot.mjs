@@ -4,11 +4,11 @@ import {assetsComposer} from './composers/assets.mjs'
 import {ordersComposer} from './composers/orders.mjs'
 import {authComposer} from './composers/auth.mjs'
 import {settingsComposer} from './composers/settings.mjs'
-<<<<<<< HEAD
+
 // import {aiSignalComposer} from './composers/aiSignalComposer.mjs'
-=======
+
 import {web3DiscoveryComposer} from './composers/web3Discovery.mjs'
->>>>>>> b9c3bdc503f225c428ebf7b0b911ed93418efe3a
+
 
 // ... ваши импорты композеров
 

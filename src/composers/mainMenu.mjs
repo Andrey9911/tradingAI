@@ -3,11 +3,9 @@ import { showAssets } from './assets.mjs';
 import { showLimitOrders } from './orders.mjs';
 import { runSignalSearch } from './signals.mjs';
 import { showSettingsMenu } from './settings.mjs';
-<<<<<<< HEAD
 // import { runAiSignal } from './aiSignalComposer.mjs';
-=======
 import { runWeb3Discovery } from './web3Discovery.mjs';
->>>>>>> b9c3bdc503f225c428ebf7b0b911ed93418efe3a
+
 
 export const mainMenuComposer = new Composer();
 
@@ -17,16 +15,13 @@ export function buildMainMenuKeyboard() {
     .text('📊 Лимитные ордера').row()
     .text('🔍 Поиск сигналов')
     .text('⚙️ Настройки')
-<<<<<<< HEAD
-    .text('🤖 AI анализ мемок').row()
+    .text('🧬 Web3 top-10')
     .text('⚡ Позиции (фьючи)')
     .resized();
 }
-=======
-    .text('🧠 AI-аналитика').row()
-    .text('🧬 Web3 top-10')
-    .text('⚡ Позиции (фьючи)');
->>>>>>> b9c3bdc503f225c428ebf7b0b911ed93418efe3a
+
+    
+
 
 /** Отправить приветствие и reply-клавиатуру главного меню */
 export async function sendMainMenu(ctx) {
@@ -56,15 +51,15 @@ mainMenuComposer.on('message:text', async (ctx, next) => {
   if (ctx.message.text === '⚙️ Настройки') {
     await showSettingsMenu(ctx);
   }
-<<<<<<< HEAD
-=======
+
+  
+
   if (ctx.message.text === '🧠 AI-аналитика') {
     await ctx.reply('🤖 AI-аналитика в разработке. Скоро вы сможете получать прогнозы по выбранным монетам.');
   }
   if (ctx.message.text === '🧬 Web3 top-10') {
     await runWeb3Discovery(ctx);
   }
->>>>>>> b9c3bdc503f225c428ebf7b0b911ed93418efe3a
   if (ctx.message.text === '⚡ Позиции (фьючи)') {
     await ctx.reply('⚡ Фьючерсные позиции — функционал в разработке (скоро).');
   }
