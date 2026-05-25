@@ -144,6 +144,7 @@ function normalizeDexScreenerPair(pair, dex = 'DexScreener') {
     ageMinutes: minutesSince(pair.pairCreatedAt),
     dex: firstString(pair.dexId, dex),
     pairAddress: firstString(pair.pairAddress),
+    devWallet: firstString(pair.info?.creator, pair.creator, pair.deployer, pair.owner),
     source: dex,
     riskFlags: detectRiskFlags(pair),
   };
@@ -168,6 +169,7 @@ function normalizeGeckoPool(pool) {
     ageMinutes: minutesSince(attrs.pool_created_at),
     dex: firstString(attrs.dex_id, 'GeckoTerminal'),
     pairAddress: firstString(attrs.address, pool.id),
+    devWallet: firstString(attrs.creator_address, attrs.deployer_address, attrs.owner_address),
     source: 'GeckoTerminal',
     riskFlags: detectRiskFlags(pool),
   };
@@ -191,6 +193,7 @@ function normalizePumpToken(token) {
     ageMinutes: minutesSince(token.created_timestamp || token.createdAt || token.created_at),
     dex: 'Pump.fun',
     pairAddress: firstString(token.raydium_pool, token.pairAddress, token.bonding_curve),
+    devWallet: firstString(token.creator, token.deployer, token.owner, token.user),
     source: 'Pump.fun',
     riskFlags: detectRiskFlags(token),
   };
