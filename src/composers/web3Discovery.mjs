@@ -82,6 +82,12 @@ function toFixedSafe(value, digits = 1) {
   return Number.isFinite(value) ? value.toFixed(digits) : '0.0';
 }
 
+function compactReason(reason) {
+  const value = String(reason || '').trim();
+  if (value.length <= 120) return value;
+  return `${value.slice(0, 117)}…`;
+}
+
 export async function runWeb3Discovery(ctx) {
   const filters = getTokenDiscoveryFilters(ctx);
   const discovery = new TokenDiscoveryService();
@@ -139,9 +145,8 @@ export async function runWeb3Discovery(ctx) {
       text += `<b>${index + 1}. ${name}</b> ${verdictTag(token.ai.verdict)} | risk ${riskTag(token.ai.riskLevel)}\n`;
       text += `<code>${escapeHtml(token.chain)}</code> ${escapeHtml(shortAddress(token.address))} | MC ${formatUsd(token.marketCap)} | Liq ${formatUsd(token.liquidityUsd)} | Vol ${formatUsd(token.volume24h)}\n`;
       text += `Holders/tx ${token.holders}/${token.buys24h + token.sells24h} | B/S ${token.buys24h}/${token.sells24h} | Age ${Math.round(token.ageMinutes)}m\n`;
-      text += `<i>${escapeHtml(token.ai.reason)}</i>\n`;
+      text += `<i>${escapeHtml(compactReason(token.ai.reason))}</i>\n`;
       text += formatWalletIntel(token.walletIntel);
-      if (url) text += `<a href="${escapeHtml(url)}">Открыть график/пул</a>\n`;
       text += '\n';
 
       if (url) {
