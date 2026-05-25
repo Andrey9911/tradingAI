@@ -308,4 +308,97 @@ RSI(14) по закрытиям 1h: ${metrics.rsi14 != null ? metrics.rsi14.toFi
       return { verdict: 'WAIT', reason: 'Ошибка запроса к ИИ.' };
     }
   }
+
+  /**
+   * Парсинг текста поста в структурированный JSON сигнала (только извлечение полей).
+   * @param {string} rawText
+   */
+  async parseTelegramSignalPost(rawText) {
+    const prompt = `Ты парсер торговых сигналов из Telegram. Извлеки данные из текста поста.
+Твой формат ответа:
+{
+  "symbol": "BASEUSDT",
+  "side": "BUY" или "SELL",
+  "marketType": "SPOT" или "FUTURES",
+  "entry": { "type": "RANGE"|"LEVELS"|"SINGLE", "min": number|null, "max": number|null, "levels": number[] },
+  "takeProfits": number[],
+  "stopLoss": number|null,
+  "leverage": number|null,
+  "timeframe": string|null,
+  "rawConfidence": "HIGH"|"MEDIUM"|"LOW"|null,
+  "warnings": string[]
+}
+Правила:
+- symbol: базовая монета в виде XXXUSDT (если в тексте SOL или $SOL — symbol "SOLUSDT"; если SOL/USDT — "SOLUSDT").
+- Если направление покупка лонг — side BUY; шорт/продажа — SELL.
+- Если явно спот — SPOT; иначе по умолчанию SPOT если не указаны плечо/фьючерс.
+- entry: RANGE если диапазон цен; SINGLE если одна цена; LEVELS если список уровней.
+- takeProfits: по возрастанию для лонга; пустой массив если нет.
+- stopLoss: число или null если в посте нет SL; тогда warnings включает "NO_STOP_LOSS".
+- warnings: краткие коды на английском при проблемах.
+
+
+Текст поста:
+---
+${rawText.slice(0, 12000)}
+---
+
+... после текста поста верни ТОЛЬКО JSON между маркерами:
+<<<START>>>
+{...}
+<<<END>>>.`;
+
+    try {
+      const data = await this.chatWithModelFallback({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 500,
+        temperature: 0.15,
+      });
+      const raw = data?.choices?.[0]?.message?.reasoning || '';
+      const cleaned = raw
+        .replace(/```json\s*/gi, '')
+        .replace(/```\s*/g, '')
+        .trim();
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      console.log(data.choices[0].message);
+      
+      if (!jsonMatch) throw new Error('Нет JSON в ответе модели');
+      return JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      console.error('parseTelegramSignalPost:', err);
+      throw err;
+    }
+  }
+
+  /**
+   * Краткое объяснение на русском (не менять вердикт — он уже вычислен правилами).
+   */
+  async explainSignalAnalysisNarrative(ctx) {
+    const prompt = `Ты крипто-аналитик. Вердикт и оценка уже рассчитаны детерминированно — их НЕЛЬЗЯ менять, только объясни почему так может выглядеть рынок.
+
+Символ: ${ctx.symbol}, сторона: ${ctx.side}
+Вердикт: ${ctx.verdict}, score: ${ctx.score}/100, риск: ${ctx.risk}
+Статус цены относительно entry: ${ctx.entryStatus}
+RSI 1h: ${ctx.rsi != null ? ctx.rsi.toFixed(1) : 'н/д'}
+Funding: ${ctx.funding != null ? (ctx.funding >= 0 ? '+' : '') + ctx.funding.toFixed(4) + '%' : 'н/д'}
+OI 1h: ${ctx.oi1h != null ? (ctx.oi1h >= 0 ? '+' : '') + ctx.oi1h.toFixed(2) + '%' : 'н/д'}
+Спред: ${ctx.spreadPct != null ? ctx.spreadPct.toFixed(4) + '%' : 'н/д'}
+RR TP1/TP2: ${ctx.rr?.tp1 != null ? ctx.rr.tp1.toFixed(2) : '—'} / ${ctx.rr?.tp2 != null ? ctx.rr.tp2.toFixed(2) : '—'}
+SL в сигнале: ${ctx.hasSl ? 'да' : 'нет'}
+
+Напиши 2–4 коротких предложения по-русски, без markdown, без списков. Не противоречь вердикту ${ctx.verdict}.`;
+
+    try {
+      const data = await this.chatWithModelFallback({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 220,
+        temperature: 0.45,
+      });
+      const text = data?.choices?.[0]?.message?.content?.trim();
+      if (text) return text.slice(0, 900);
+    } catch (err) {
+      console.error('explainSignalAnalysisNarrative:', err);
+    }
+    return 'Краткий вывод сформирован по метрикам; нейросеть не смогла добавить пояснение.';
+  }
 }

@@ -146,29 +146,54 @@ ordersComposer.callbackQuery('ai_setup_orders', async (ctx) => {
       // ВМЕСТО getLastBuyPrice вызываем наш новый сборщик метрик
       const metrics = await bybit.get30dTradeMetrics(asset.coin);
 
-      if (metrics && metrics.avgBuyPrice && currentPrice) {
-        // 1. Стандартный ценовой спред (для понимания импульса рынка)
-        const spread = ((currentPrice - metrics.avgBuyPrice) / metrics.avgBuyPrice) * 100;
-        
-        // 2. Расчет РЕАЛЬНОГО PnL с учетом прошлых фиксаций прибыли
-        // Сколько сейчас стоят оставшиеся монеты на кошельке
-        const currentHoldingsValue = asset.walletBalance * currentPrice; 
-        
-        // Формула: (Текущая стоимость активов + Деньги от прошлых продаж) - Вложенные деньги
-        const realPnlUsd = (currentHoldingsValue + metrics.totalRealized) - metrics.totalInvested;
-        
-        // Переводим реальный PnL в проценты
-        const realPnlPct = metrics.totalInvested > 0 
-            ? (realPnlUsd / metrics.totalInvested) * 100 
-            : spread; // Запасной вариант, если почему-то нет суммы вложений
+      if (metrics && currentPrice) {
+        /**
+         * Важно:
+         * - avgBuyPrice (30d) — средняя цена ПОКУПОК за 30 дней, она не учитывает частичные продажи.
+         * - avgCostRemaining30d — себестоимость ОСТАТКА позиции внутри 30 дней (после продаж), если её можно определить.
+         * - если в 30d продавали больше чем покупали (soldFromOlderPosition=true), значит продавали старую позицию,
+         *   и 30d cost basis для остатка определить нельзя → используем avgBuyPrice как ориентир и помечаем предупреждение.
+         */
+        const basisPrice =
+          metrics.avgCostRemaining30d != null
+            ? metrics.avgCostRemaining30d
+            : metrics.avgBuyPrice;
+
+        if (!basisPrice || basisPrice <= 0) {
+          await sleep(200);
+          continue;
+        }
+
+        // 1) Спред относительно себестоимости (остатка), либо avgBuyPrice как fallback
+        const spread = ((currentPrice - basisPrice) / basisPrice) * 100;
+
+        // 2) PnL за 30d, считаем только по чистой позиции, собранной в 30d (чтобы не подмешивать старые холды)
+        const qty30d = metrics.remainingQty30d != null ? Math.max(0, metrics.remainingQty30d) : null;
+        const currentHoldingsValue30d = qty30d != null ? qty30d * currentPrice : null;
+        const realPnlUsd =
+          qty30d != null && metrics.totalInvested > 0
+            ? (currentHoldingsValue30d + metrics.totalRealized) - metrics.totalInvested
+            : null;
+        const realPnlPct =
+          realPnlUsd != null && metrics.totalInvested > 0
+            ? (realPnlUsd / metrics.totalInvested) * 100
+            : null;
+
+        // 3) Цена, при которой продажа будет с профитом X% относительно basisPrice
+        const targetSellPrice = basisPrice * (1 + SELL_SPREAD_PCT / 100);
 
         analysis.push({
           coin: asset.coin,
           symbol,
           spread,
-          realPnlPct, // Новый параметр
-          realPnlUsd, // Новый параметр
-          lastBuyPrice: metrics.avgBuyPrice.toFixed(10),
+          realPnlPct,
+          realPnlUsd,
+          basisPrice,
+          targetSellPrice,
+          avgBuyPrice: metrics.avgBuyPrice,
+          avgSellPrice: metrics.avgSellPrice,
+          soldFromOlderPosition: Boolean(metrics.soldFromOlderPosition),
+          qty30d,
           currentPrice,
           walletBalance: asset.walletBalance,
           usdValue: asset.usdValue,
@@ -207,9 +232,14 @@ ordersComposer.callbackQuery('ai_setup_orders', async (ctx) => {
       msg += `<b>📈 Сигнал к продаже</b> (цена выросла от последней покупки на ≥ ${SELL_SPREAD_PCT}%):\n`;
       sellCandidates.forEach(c => {
         msg += `🔸 <b>${c.coin}</b>  🟩 Спред: <b>+${c.spread.toFixed(2)}%</b>\n`;
-        // ДОБАВЛЕНА СТРОКА С РЕАЛЬНЫМ PNL:
-        msg += `├ Real PnL (30d): <b>${c.realPnlPct > 0 ? '+' : ''}${c.realPnlPct.toFixed(2)}%</b> (~${c.realPnlUsd.toFixed(2)} USDT)\n`;
-        msg += `├ Покупка: <code>${c.lastBuyPrice}</code> ➡️ Сейчас: <code>${c.currentPrice}</code>\n`;
+        if (c.soldFromOlderPosition) {
+          msg += `├ ⚠️ В 30d были чистые продажи (продавали старую позицию). Себестоимость остатка по 30d неточная.\n`;
+        }
+        if (c.realPnlPct != null && c.realPnlUsd != null) {
+          msg += `├ PnL (30d, только net позиции): <b>${c.realPnlPct > 0 ? '+' : ''}${c.realPnlPct.toFixed(2)}%</b> (~${c.realPnlUsd.toFixed(2)} USDT)\n`;
+        }
+        msg += `├ Себестоимость (basis): <code>${c.basisPrice.toFixed(10)}</code> ➡️ Сейчас: <code>${c.currentPrice}</code>\n`;
+        msg += `├ Цена для +${SELL_SPREAD_PCT}%: <code>${c.targetSellPrice.toFixed(10)}</code>\n`;
         msg += `└ Баланс: ~${c.usdValue.toFixed(2)} USDT  |  24ч: ${c.change24h.toFixed(2)}%\n\n`;
 
         actionKeyboard
@@ -225,7 +255,7 @@ ordersComposer.callbackQuery('ai_setup_orders', async (ctx) => {
       buyCandidates.forEach(d => {
         // ИСПОЛЬЗУЕМ ПРАВИЛЬНЫЕ КЛЮЧИ
         msg += `🔹 <b>${d.coin}</b>  🔻 <b>${d.spread.toFixed(2)}%</b>\n`;
-        msg += `├ Покупка: <code>${d.lastBuyPrice}</code> ➡️ Сейчас: <code>${d.currentPrice}</code>\n`;
+        msg += `├ Себестоимость (basis): <code>${d.basisPrice.toFixed(10)}</code> ➡️ Сейчас: <code>${d.currentPrice}</code>\n`;
         // УБРАЛИ PROMISE, ОСТАВИЛИ ТОЛЬКО УЖЕ СОХРАНЕННОЕ ЗНАЧЕНИЕ d.change24h
         msg += `└ Баланс: ~${d.usdValue.toFixed(2)} USDT  |  24ч: ${d.change24h.toFixed(2)}%\n\n`;
 

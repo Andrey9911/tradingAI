@@ -127,6 +127,219 @@ export class BybitService {
   }
 
   /**
+   * Инструмент спота (или linear) по символу.
+   * @param {string} symbol
+   * @param {'spot'|'linear'} category
+   * @returns {Promise<object|null>}
+   */
+  async getInstrumentInfo(symbol, category = 'spot') {
+    const resp = await this.client.getInstrumentsInfo({
+      category,
+      symbol,
+    });
+    if (resp.retCode !== 0 || !resp.result?.list?.length) return null;
+    const row = resp.result.list[0];
+    if (row.status && row.status !== 'Trading') return null;
+    return row;
+  }
+
+  /**
+   * Тикер одной пары.
+   * @param {string} symbol
+   * @param {'spot'|'linear'} category
+   */
+  async getTicker(symbol, category = 'spot') {
+    const resp = await this.client.getTickers({ category, symbol });
+    if (resp.retCode !== 0 || !resp.result?.list?.length) return null;
+    const t = resp.result.list[0];
+    return {
+      lastPrice: parseFloat(t.lastPrice),
+      volume24h: parseFloat(t.volume24h),
+      turnover24h: parseFloat(t.turnover24h),
+      price24hPcnt: parseFloat(t.price24hPcnt) * 100,
+      fundingRate: t.fundingRate != null ? parseFloat(t.fundingRate) * 100 : null,
+    };
+  }
+
+  /** История funding (perp), % */
+  async getFundingRateHistory(symbol, limit = 10) {
+    const resp = await this.client.getFundingRateHistory({
+      category: 'linear',
+      symbol,
+      limit,
+    });
+    if (resp.retCode !== 0 || !resp.result?.list?.length) return [];
+    return resp.result.list.map(x => ({
+      fundingRatePct: x.fundingRate != null ? parseFloat(x.fundingRate) * 100 : null,
+      fundingRateTs: x.fundingRateTimestamp ? Number(x.fundingRateTimestamp) : null,
+    }));
+  }
+
+  /** Последние трейды (лента) */
+  async getRecentTrades(symbol, category = 'spot', limit = 50) {
+    const resp = await this.client.getPublicTradingHistory({
+      category,
+      symbol,
+      limit,
+    });
+    if (resp.retCode !== 0 || !resp.result?.list?.length) return [];
+    return resp.result.list;
+  }
+
+  /**
+   * Свечи (от старых к новым).
+   * @param {string} symbol
+   * @param {string} interval Bybit interval, напр. '60'
+   * @param {number} limit
+   * @returns {Promise<Array<{ t: number, o: number, h: number, l: number, c: number, v: number }>>}
+   */
+  async getKlines(symbol, interval = '60', limit = 100) {
+    const resp = await this.client.getKline({
+      category: 'spot',
+      symbol,
+      interval,
+      limit,
+    });
+    if (resp.retCode !== 0 || !resp.result?.list?.length) return [];
+    return resp.result.list
+      .map(row => ({
+        t: Number(row[0]),
+        o: parseFloat(row[1]),
+        h: parseFloat(row[2]),
+        l: parseFloat(row[3]),
+        c: parseFloat(row[4]),
+        v: parseFloat(row[5]),
+      }))
+      .filter(k => Number.isFinite(k.c))
+      .sort((a, b) => a.t - b.t);
+  }
+
+  /** Глубина стакана (лучшие уровни) */
+  async getOrderbookDepth(symbol, limit = 25) {
+    const resp = await this.client.getOrderbook({
+      category: 'spot',
+      symbol,
+      limit,
+    });
+    if (resp.retCode !== 0) return null;
+    return {
+      bids: resp.result?.b ?? [],
+      asks: resp.result?.a ?? [],
+    };
+  }
+
+  /**
+   * Фьючерсный контекст: funding, OI 1h/4h/24h, long/short.
+   * @param {string} symbol — тот же USDT-символ, что и на споте
+   */
+  async getExtendedDerivativesContext(symbol) {
+    try {
+      const tickerResp = await this.client.getTickers({ category: 'linear', symbol });
+      const oiResp = await this.client.getOpenInterest({
+        category: 'linear',
+        symbol,
+        intervalTime: '1h',
+        limit: 30,
+      });
+      const lsResp = await this.client.getLongShortRatio({
+        category: 'linear',
+        symbol,
+        period: '1h',
+        limit: 1,
+      });
+
+      let fundingRate = null;
+      if (tickerResp.retCode === 0 && tickerResp.result?.list?.length) {
+        const fr = tickerResp.result.list[0].fundingRate;
+        fundingRate = fr != null ? parseFloat(fr) * 100 : null;
+      }
+
+      const oiListRaw = oiResp.retCode === 0 && oiResp.result?.list ? oiResp.result.list : [];
+      const oiList = [...oiListRaw].sort(
+        (a, b) => Number(b.timestamp || b[0] || 0) - Number(a.timestamp || a[0] || 0),
+      );
+      const oiVals = oiList.map(x => parseFloat(x.openInterest)).filter(Number.isFinite);
+
+      const pctChange = (idx) => {
+        if (oiVals.length <= idx || oiVals[0] <= 0) return null;
+        const cur = oiVals[0];
+        const prev = oiVals[idx];
+        if (prev == null || prev <= 0) return null;
+        return ((cur - prev) / prev) * 100;
+      };
+
+      const oiChange1h = oiVals.length >= 2 ? pctChange(1) : null;
+      const oiChange4h = oiVals.length >= 5 ? pctChange(4) : null;
+      const oiChange24h = oiVals.length >= 25 ? pctChange(24) : null;
+
+      let longShortRatio = null;
+      if (lsResp.retCode === 0 && lsResp.result?.list?.length) {
+        const buyRatio = parseFloat(lsResp.result.list[0].buyRatio);
+        const sellRatio = parseFloat(lsResp.result.list[0].sellRatio);
+        longShortRatio = sellRatio > 0 ? buyRatio / sellRatio : null;
+      }
+
+      return {
+        fundingRate,
+        oiChange1h,
+        oiChange4h,
+        oiChange24h,
+        longShortRatio,
+      };
+    } catch {
+      return {
+        fundingRate: null,
+        oiChange1h: null,
+        oiChange4h: null,
+        oiChange24h: null,
+        longShortRatio: null,
+      };
+    }
+  }
+
+  /**
+   * Лимитная покупка на споте (базовый объём из USDT).
+   * Этап 2 UI — вызов только после подтверждения пользователя.
+   */
+  async placeLimitBuyOrder(symbol, amountUsdt, price) {
+    const info = await this.getInstrumentInfo(symbol, 'spot');
+    if (!info) throw new Error('Инструмент не найден');
+
+    const tick = parseFloat(info.priceFilter?.tickSize || '0.00000001');
+    const step = parseFloat(info.lotSizeFilter?.qtyStep || info.lotSizeFilter?.basePrecision || '0.00000001');
+    const minQty = parseFloat(info.lotSizeFilter?.minOrderQty || '0');
+    const minAmt = parseFloat(info.lotSizeFilter?.minOrderAmt || '0');
+
+    const roundDown = (v, stepVal) => {
+      if (!stepVal || stepVal <= 0) return v;
+      return Math.floor(v / stepVal) * stepVal;
+    };
+
+    let px = Number(price);
+    if (tick > 0) px = roundDown(px, tick);
+    let qty = amountUsdt / px;
+    if (step > 0) qty = roundDown(qty, step);
+    if (minQty > 0 && qty < minQty) {
+      throw new Error(`Количество ${qty} ниже minOrderQty ${minQty}`);
+    }
+    const notional = qty * px;
+    if (minAmt > 0 && notional < minAmt) {
+      throw new Error(`Сумма сделки ${notional.toFixed(2)} USDT ниже minOrderAmt ${minAmt}`);
+    }
+
+    const resp = await this.client.submitOrder({
+      category: 'spot',
+      symbol,
+      side: 'Buy',
+      orderType: 'Limit',
+      qty: String(qty),
+      price: String(px),
+    });
+    if (resp.retCode !== 0) throw new Error(resp.retMsg);
+    return resp.result;
+  }
+
+  /**
    * Последняя цена исполненной покупки по спот-паре (по истории сделок)
    * @param {string} coin — код монеты, например 'BTC' (не 'BTCUSDT')
    */
@@ -465,7 +678,7 @@ export class BybitService {
 
       let totalInvested = 0; // Вложено USDT (сумма покупок)
       let totalBoughtQty = 0; // Куплено монет
-      let totalRealized = 0; // Выведено USDT (сумма продаж)
+      let totalRealized = 0; // Получено USDT (сумма продаж)
       let totalSoldQty = 0; // Продано монет
 
       resp.result.list.forEach(ex => {
@@ -481,10 +694,46 @@ export class BybitService {
         }
       });
 
-      // Средняя цена покупки
+      // Средние цены по исполненным сделкам (VWAP)
       const avgBuyPrice = totalBoughtQty > 0 ? totalInvested / totalBoughtQty : null;
+      const avgSellPrice = totalSoldQty > 0 ? totalRealized / totalSoldQty : null;
 
-      return { totalInvested, totalBoughtQty, totalRealized, totalSoldQty, avgBuyPrice };
+      /**
+       * Остаток позиции "внутри 30d" (если в периоде были чистые продажи больше покупок,
+       * значит продавали старую позицию и этот остаток/себестоимость определить нельзя).
+       */
+      const netQty = totalBoughtQty - totalSoldQty;
+      const soldFromOlderPosition = netQty < 0;
+      const remainingQty30d = soldFromOlderPosition ? null : netQty;
+
+      /**
+       * Себестоимость остатка при учёте "average cost" внутри периода.
+       * costSold = avgBuyPrice * soldQty, remainingCost = totalInvested - costSold.
+       */
+      let remainingCost30d = null;
+      let avgCostRemaining30d = null;
+      let realizedPnl30d = null;
+
+      if (!soldFromOlderPosition && avgBuyPrice != null) {
+        const costSold = avgBuyPrice * totalSoldQty;
+        remainingCost30d = totalInvested - costSold;
+        avgCostRemaining30d = remainingQty30d > 0 ? remainingCost30d / remainingQty30d : null;
+        realizedPnl30d = totalRealized - costSold;
+      }
+
+      return {
+        totalInvested,
+        totalBoughtQty,
+        totalRealized,
+        totalSoldQty,
+        avgBuyPrice,
+        avgSellPrice,
+        remainingQty30d,
+        remainingCost30d,
+        avgCostRemaining30d,
+        realizedPnl30d,
+        soldFromOlderPosition,
+      };
     } catch (err) {
       console.error(`Ошибка при получении метрик для ${coin}:`, err);
       return null;

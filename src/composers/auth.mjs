@@ -15,8 +15,8 @@ authComposer.on('message:text', async (ctx, next) => {
   const step = ctx.session.step;
   if (!step) {
     // Если нет шага, передаём управление дальше (если есть другие обработчики)
-    await next();
-    return;
+    return await next();
+    
   }
 
   const text = ctx.message.text.trim();

@@ -1,31 +1,39 @@
-import { Composer, InlineKeyboard, Keyboard } from 'grammy';
+import { Composer, Keyboard } from 'grammy';
 import { showAssets } from './assets.mjs';
 import { showLimitOrders } from './orders.mjs';
 import { runSignalSearch } from './signals.mjs';
 import { showSettingsMenu } from './settings.mjs';
+// import { runAiSignal } from './aiSignalComposer.mjs';
 
 export const mainMenuComposer = new Composer();
 
-// Команда /start
-mainMenuComposer.command('start', async (ctx) => {
-  const keyboard = new Keyboard()
+export function buildMainMenuKeyboard() {
+  return new Keyboard()
     .text('💰 Активы')
     .text('📊 Лимитные ордера').row()
     .text('🔍 Поиск сигналов')
     .text('⚙️ Настройки')
-    .text('🧠 AI-аналитика').row()
-    .text('⚡ Позиции (фьючи)');
+    .text('🤖 AI анализ мемок').row()
+    .text('⚡ Позиции (фьючи)')
+    .resized();
+}
 
-  await ctx.reply(
-    '👋 Торговый ассистент Bybit\nВыберите действие:',
-    { reply_markup: keyboard }
-  );
+/** Отправить приветствие и reply-клавиатуру главного меню */
+export async function sendMainMenu(ctx) {
+  await ctx.reply('👋 Торговый ассистент Bybit\nВыберите действие:', {
+    reply_markup: buildMainMenuKeyboard(),
+  });
+}
+
+// Команда /start
+mainMenuComposer.command('start', async (ctx) => {
+  await sendMainMenu(ctx);
 });
 
 
 
 // Обработка нажатий на кнопки главного меню
-mainMenuComposer.on('message', async (ctx, next) => {
+mainMenuComposer.on('message:text', async (ctx, next) => {
   if (ctx.message.text === '💰 Активы') {
     await showAssets(ctx);
   }
@@ -38,11 +46,14 @@ mainMenuComposer.on('message', async (ctx, next) => {
   if (ctx.message.text === '⚙️ Настройки') {
     await showSettingsMenu(ctx);
   }
-  if (ctx.message.text === '🧠 AI-аналитика') {
-    await ctx.reply('🤖 AI-аналитика в разработке. Скоро вы сможете получать прогнозы по выбранным монетам.');
-  }
   if (ctx.message.text === '⚡ Позиции (фьючи)') {
     await ctx.reply('⚡ Фьючерсные позиции — функционал в разработке (скоро).');
+  }
+  if (ctx.message.text === '🤖 AI анализ мемок') {
+    // await runAiSignal(ctx);  //TODO: Добавить обработку мемок
+    await ctx.reply('🤖 AI анализ мемок');
+    
+    return;
   }
   return next();
 });

@@ -4,6 +4,7 @@ import {assetsComposer} from './composers/assets.mjs'
 import {ordersComposer} from './composers/orders.mjs'
 import {authComposer} from './composers/auth.mjs'
 import {settingsComposer} from './composers/settings.mjs'
+// import {aiSignalComposer} from './composers/aiSignalComposer.mjs'
 
 // ... ваши импорты композеров
 

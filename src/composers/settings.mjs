@@ -85,5 +85,6 @@ settingsComposer.on('message:text', async (ctx, next) => {
   ctx.session.settingsStep = null;
 
   await showSettingsMenu(ctx);
+  return await next();
 });
 

@@ -2,6 +2,7 @@ import { AuthService } from '../services/authService.mjs';
 import { BybitService } from '../services/bybitService.mjs';
 import { AIService } from '../services/aiService.mjs';
 import { InlineKeyboard } from 'grammy';
+import { getNewsSentiment } from '../services/searchNews/searchNews.mjs';
 
 const DEFAULT_SIGNAL_SETTINGS = {
   /** спред для сигнала на продажу (>= %) */
@@ -211,6 +212,11 @@ export async function runSignalSearch(ctx) {
       // Получаем деривативные метрики (OI, Funding, L/S)
       const deriv = await bybit.getDerivativesContext(sym);
 
+      // Получаем новостной анализ для текущей монеты
+      const baseCoin = baseCoinFromSpotSymbol(sym); // у вас уже есть эта функция
+      const newsSentiment = await getNewsSentiment(baseCoin);
+      await updateStatus(`📰 Анализ новостей для ${sym}: ${newsSentiment?.overall || 'нет данных'}`);
+
       const verdict = await ai.evaluateEntrySignal({
         symbol: sym,
         lastPrice,
@@ -224,7 +230,8 @@ export async function runSignalSearch(ctx) {
         fundingRate: deriv.fundingRate,
         oiChangePct: deriv.oiChangePct,
         lsRatio: deriv.lsRatio,
-        volumeSpike: volumeSpike
+        volumeSpike: volumeSpike,
+        newsSentiment: newsSentiment,   // ← добавлено
       },updateStatus);
 
       buyRows.push({
@@ -252,18 +259,18 @@ export async function runSignalSearch(ctx) {
     if (!sellSignals.length) {
       text += 'Нет активов с ростом от базы покупки выше порога.\n\n';
     } else {
-      sellSignals.forEach(s => {
-        text += `• <b>${escapeHtml(s.coin)}</b> +${s.spread.toFixed(2)}%`;
-        text += ` <i>(база: ${escapeHtml(s.refSource)}, ${s.refPrice})</i>\n`;
-        text += `  сейчас ${s.currentPrice}, ~${s.usdValue.toFixed(2)} USDT, 24ч ${s.change24h.toFixed(2)}%\n`;
+      sellSignals.forEach(r => {
+        text += `• <b>${escapeHtml(r.coin)}</b> +${r.spread.toFixed(2)}%`;
+        text += ` <i>(база: ${escapeHtml(r.refSource)}, ${r.refPrice})</i>\n`;
+        text += `  сейчас ${r.currentPrice}, ~${r.usdValue.toFixed(2)} USDT, 24ч ${r.change24h.toFixed(2)}%\n`;
 
-        if (s.avg3 != null && s.spreadAvg3 != null) {
-          text += `  средняя 3 покупок: ${s.avg3.toFixed(8)} → спред ${s.spreadAvg3 >= 0 ? '+' : ''}${s.spreadAvg3.toFixed(2)}%\n`;
+        text += `  <blockquote>24ч ${r.change24h.toFixed(2)}%\n RSI≈${r.rsi14 != null ? r.rsi14.toFixed(1) : '—'}\n OI Изм: ${r.oiChangePct != null ? r.oiChangePct.toFixed(2) + '%' : '—'}\n Фандинг: ${r.fundingRate != null ? r.fundingRate.toFixed(4) + '%' : '—'}</blockquote>\n`;
+        if (r.avg3 != null && r.spreadAvg3 != null) {
+          text += `  средняя 3 покупок: ${r.avg3.toFixed(8)} → спред ${r.spreadAvg3 >= 0 ? '+' : ''}${r.spreadAvg3.toFixed(2)}%\n`;
         }
+        text += '\n';
       });
-      text += `  <blockquote>24ч ${r.change24h.toFixed(2)}%\n RSI≈${r.rsi14 != null ? r.rsi14.toFixed(1) : '—'}\n OI Изм: ${r.oiChangePct != null ? r.oiChangePct.toFixed(2) + '%' : '—'}\n Фандинг: ${r.fundingRate != null ? r.fundingRate.toFixed(4) + '%' : '—'}</blockquote>\n`;
-      text += `  <blockquote>24ч ${r.change24h.toFixed(2)}%\n RSI≈${r.rsi14 != null ? r.rsi14.toFixed(1) : '—'}\n OI Изм: ${r.oiChangePct != null ? r.oiChangePct.toFixed(2) + '%' : '—'}\n Фандинг: ${r.fundingRate != null ? r.fundingRate.toFixed(4) + '%' : '—'}</blockquote>\n`;
-      text += '\n';
+      
     }
 
     text += `<b>📉 Идеи на покупку (ИИ + метрики)</b>\n`;

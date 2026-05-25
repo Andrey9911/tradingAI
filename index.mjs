@@ -47,9 +47,10 @@ if (WEBHOOK_URL) {
 
   console.log('WEBHOOK_URL не задан. Запуск бота в режиме long polling...');
   // Запускаем самого бота
-  bot.start({
-    onStart: (botInfo) => {
-      console.log(`Бот @${botInfo.username} успешно запущен!`);
-    }
-  });
+  // bot.start({
+  //   onStart: (botInfo) => {
+  //     console.log(`Бот @${botInfo.username} успешно запущен!`);
+  //   }
+  // });
+  bot.start();
 }
