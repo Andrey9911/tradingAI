@@ -310,6 +310,7 @@ RSI(14) по закрытиям 1h: ${metrics.rsi14 != null ? metrics.rsi14.toFi
   }
 
   /**
+<<<<<<< HEAD
    * Парсинг текста поста в структурированный JSON сигнала (только извлечение полей).
    * @param {string} rawText
    */
@@ -347,10 +348,39 @@ ${rawText.slice(0, 12000)}
 <<<START>>>
 {...}
 <<<END>>>.`;
+=======
+   * AI-анализ Web3 discovery token после первичных фильтров ликвидности/риска.
+   * @returns {Promise<{ verdict: 'BUY'|'WAIT'|'AVOID', reason: string, riskLevel: 'LOW'|'MEDIUM'|'HIGH' }>}
+   */
+  async evaluateDiscoveredToken(token, onStatusUpdate = null) {
+    const prompt = `Ты профессиональный Web3-аналитик мемкоинов и новых DEX-пулов. Торговля НЕ автоматическая: нужен сигнал для ручного решения.
+
+Данные токена:
+${JSON.stringify({
+  chain: token.chain,
+  address: token.address,
+  symbol: token.symbol,
+  price: token.price,
+  marketCap: token.marketCap,
+  liquidityUsd: token.liquidityUsd,
+  volume24h: token.volume24h,
+  buys24h: token.buys24h,
+  sells24h: token.sells24h,
+  holders: token.holders,
+  ageMinutes: token.ageMinutes,
+  dex: token.dex,
+  pairAddress: token.pairAddress,
+  source: token.source,
+}, null, 2)}
+
+Проанализируй smart money/whale/dev-wallet признаки по доступным метрикам, rugpull-риск, ликвидность, buy/sell pressure, возраст и социальный/launch контекст по источнику.
+Ответь СТРОГО одной строкой JSON без markdown: {"verdict":"BUY"|"WAIT"|"AVOID","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"кратко по-русски, 1-2 предложения"}`;
+>>>>>>> b9c3bdc503f225c428ebf7b0b911ed93418efe3a
 
     try {
       const data = await this.chatWithModelFallback({
         messages: [{ role: 'user', content: prompt }],
+<<<<<<< HEAD
         max_tokens: 500,
         temperature: 0.15,
       });
@@ -401,4 +431,29 @@ SL в сигнале: ${ctx.hasSl ? 'да' : 'нет'}
     }
     return 'Краткий вывод сформирован по метрикам; нейросеть не смогла добавить пояснение.';
   }
+=======
+        max_tokens: 700,
+        temperature: 0.3,
+      }, onStatusUpdate);
+
+      const raw = data.choices?.[0]?.message?.content || '';
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return { verdict: 'WAIT', riskLevel: 'MEDIUM', reason: 'ИИ не вернул структурированный ответ.' };
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      const verdictRaw = String(parsed.verdict || '').toUpperCase();
+      const riskRaw = String(parsed.riskLevel || '').toUpperCase();
+      return {
+        verdict: verdictRaw === 'BUY' ? 'BUY' : verdictRaw === 'AVOID' ? 'AVOID' : 'WAIT',
+        riskLevel: riskRaw === 'LOW' ? 'LOW' : riskRaw === 'HIGH' ? 'HIGH' : 'MEDIUM',
+        reason: String(parsed.reason || '').slice(0, 500),
+      };
+    } catch (err) {
+      console.error('evaluateDiscoveredToken:', err);
+      return { verdict: 'WAIT', riskLevel: 'MEDIUM', reason: 'Ошибка AI-анализа discovery token.' };
+    }
+  }
+>>>>>>> b9c3bdc503f225c428ebf7b0b911ed93418efe3a
 }

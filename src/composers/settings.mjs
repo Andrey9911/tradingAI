@@ -1,4 +1,5 @@
 import { Composer, InlineKeyboard } from 'grammy';
+import { getTokenDiscoveryFilters } from '../services/tokenDiscoveryService.mjs';
 
 export const settingsComposer = new Composer();
 
@@ -20,6 +21,13 @@ function getSignalSettings(ctx) {
   return ctx.session.signalSettings;
 }
 
+const TOKEN_FILTER_LABELS = {
+  liquidityUsd: 'Ликвидность',
+  holders: 'Холдеры',
+  volume24h: 'Объём 24ч',
+  ageMinutes: 'Возраст',
+};
+
 function parseNumber(input) {
   // Позволяем ввод вида: "15", "15.5", "+15%", "15,2"
   const normalized = String(input).replace(',', '.').trim();
@@ -30,15 +38,27 @@ function parseNumber(input) {
 
 export async function showSettingsMenu(ctx) {
   const s = getSignalSettings(ctx);
+  const tokenFilters = getTokenDiscoveryFilters(ctx);
   const keyboard = new InlineKeyboard()
     .text(`📈 Спред продажи больще ${s.sellSpreadPct}%`, 'settings_edit_sellSpreadPct')
     .text(`📉 Вход: 24ч рост меньше +${s.maxEntryChg24Pct}%`, 'settings_edit_maxEntryChg24Pct')
+    .row()
+    .text(`💧 Token liquidity > $${tokenFilters.liquidityUsd}`, 'settings_edit_token_liquidityUsd')
+    .text(`👥 Holders > ${tokenFilters.holders}`, 'settings_edit_token_holders')
+    .row()
+    .text(`📊 Volume 24h > $${tokenFilters.volume24h}`, 'settings_edit_token_volume24h')
+    .text(`⏱ Age > ${tokenFilters.ageMinutes}m`, 'settings_edit_token_ageMinutes')
     .row()
     .text('◀️ Назад в меню', 'settings_back_main');
 
   const text = `<b>⚙️ Настройки сигналов</b>\n\n` +
     `1) Продажа: спред больще <b>${s.sellSpreadPct}%</b>\n` +
     `2) Вход: 24ч рост меньше <b>+${s.maxEntryChg24Pct}%</b>\n\n` +
+    `<b>Web3 token discovery</b>\n` +
+    `• liquidityUsd &gt; <b>${tokenFilters.liquidityUsd}</b>\n` +
+    `• holders &gt; <b>${tokenFilters.holders}</b>\n` +
+    `• volume24h &gt; <b>${tokenFilters.volume24h}</b>\n` +
+    `• ageMinutes &gt; <b>${tokenFilters.ageMinutes}</b>\n\n` +
     `Выберите параметр и отправьте новое число в чате.`;
 
   await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
@@ -55,6 +75,18 @@ settingsComposer.callbackQuery('settings_edit_maxEntryChg24Pct', async (ctx) => 
   await ctx.answerCallbackQuery().catch(() => {});
   ctx.session.settingsStep = 'maxEntryChg24Pct';
   await ctx.reply('Измените максимум роста за 24ч для входа (например: 15).');
+});
+
+settingsComposer.callbackQuery(/^settings_edit_token_(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  const field = ctx.match[1];
+  if (!TOKEN_FILTER_LABELS[field]) {
+    await ctx.reply('Неизвестный фильтр token discovery.');
+    return;
+  }
+
+  ctx.session.settingsStep = `tokenDiscovery.${field}`;
+  await ctx.reply(`Измените фильтр "${TOKEN_FILTER_LABELS[field]}" для Web3 token discovery.`);
 });
 
 settingsComposer.callbackQuery('settings_back_main', async (ctx) => {
@@ -80,11 +112,16 @@ settingsComposer.on('message:text', async (ctx, next) => {
     return;
   }
 
-  const s = getSignalSettings(ctx);
-  s[step] = value;
+  if (step.startsWith('tokenDiscovery.')) {
+    const field = step.split('.')[1];
+    const filters = getTokenDiscoveryFilters(ctx);
+    filters[field] = value;
+  } else {
+    const s = getSignalSettings(ctx);
+    s[step] = value;
+  }
   ctx.session.settingsStep = null;
 
   await showSettingsMenu(ctx);
   return await next();
 });
-
