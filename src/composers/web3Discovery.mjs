@@ -4,6 +4,7 @@ import {
   TokenDiscoveryService,
   getTokenDiscoveryFilters,
 } from '../services/tokenDiscoveryService.mjs';
+import { WalletIntelService } from '../services/walletIntelService.mjs';
 
 export const web3DiscoveryComposer = new Composer();
 
@@ -49,10 +50,49 @@ function riskTag(riskLevel) {
   return 'MEDIUM';
 }
 
+function walletRiskTag(riskLevel) {
+  if (riskLevel === 'LOW') return 'LOW';
+  if (riskLevel === 'HIGH') return 'HIGH';
+  if (riskLevel === 'UNKNOWN') return 'UNKNOWN';
+  return 'MEDIUM';
+}
+
+function formatOptionalNumber(value, suffix = '') {
+  if (!Number.isFinite(value)) return '—';
+  return `${value}${suffix}`;
+}
+
+function formatWalletIntel(walletIntel) {
+  if (!walletIntel) return 'WalletIntel: —\n';
+  const distribution = walletIntel.holderDistribution || {};
+  const cluster = walletIntel.fundingCluster || {};
+  const clusterText = cluster.isClustered
+    ? `cluster YES (${escapeHtml(cluster.source || 'same funding')})`
+    : 'cluster no';
+
+  return (
+    `WalletIntel ${walletRiskTag(walletIntel.riskLevel)} | ${clusterText}\n` +
+    `Age ${formatOptionalNumber(walletIntel.walletAgeDays, 'd')} | fund ${escapeHtml(walletIntel.firstFundingSource || 'unknown')} | connected ${walletIntel.connectedWallets || 0} | rugpulls ${walletIntel.previousRugpulls || 0}/${walletIntel.previousTokens || 0}\n` +
+    `Sniper ${escapeHtml(walletIntel.sniperBehavior || 'NONE')} | ${escapeHtml(walletIntel.transferPattern || 'unknown')} | PnL ${escapeHtml(walletIntel.realizedProfit || '—')} | top5 ${toFixedSafe(distribution.top5Pct)}%\n` +
+    `<i>${escapeHtml(walletIntel.summary || 'wallet intelligence unavailable')}</i>\n`
+  );
+}
+
+function toFixedSafe(value, digits = 1) {
+  return Number.isFinite(value) ? value.toFixed(digits) : '0.0';
+}
+
+function compactReason(reason) {
+  const value = String(reason || '').trim();
+  if (value.length <= 120) return value;
+  return `${value.slice(0, 117)}…`;
+}
+
 export async function runWeb3Discovery(ctx) {
   const filters = getTokenDiscoveryFilters(ctx);
   const discovery = new TokenDiscoveryService();
   const ai = new AIService();
+  const walletIntel = new WalletIntelService();
   const loading = await ctx.reply('⏳ Сканирую Pump.fun, DexScreener и GeckoTerminal…');
   let statusText = '🔎 <b>Web3 discovery scanner</b>\n';
 
@@ -91,20 +131,22 @@ export async function runWeb3Discovery(ctx) {
       analyzed.push({ ...token, ai: aiResult });
     }
 
+    await updateStatus(`🕵️ Запускаю Wallet Intelligence для top-${analyzed.length}…`);
+    const enriched = await walletIntel.analyzeTopTokens(analyzed, updateStatus);
+
     const keyboard = new InlineKeyboard();
-    let text = `<b>🧠 Web3 Intelligence: top-${analyzed.length}</b>\n`;
+    let text = `<b>🧠 Web3 Intelligence: top-${enriched.length}</b>\n`;
     text += `<i>Источники: Pump.fun, DexScreener, GeckoTerminal. Это AI-отчёт для ручного решения, не авто-торговля.</i>\n\n`;
     text += `<b>Фильтры</b>: liquidityUsd &gt; ${filters.liquidityUsd}, holders &gt; ${filters.holders}, volume24h &gt; ${filters.volume24h}, ageMinutes &gt; ${filters.ageMinutes}\n\n`;
 
-    analyzed.forEach((token, index) => {
+    enriched.forEach((token, index) => {
       const url = tokenUrl(token);
       const name = escapeHtml(token.symbol || shortAddress(token.address));
       text += `<b>${index + 1}. ${name}</b> ${verdictTag(token.ai.verdict)} | risk ${riskTag(token.ai.riskLevel)}\n`;
-      text += `<code>${escapeHtml(token.chain)}</code> ${escapeHtml(shortAddress(token.address))} | ${escapeHtml(token.dex)}\n`;
-      text += `MC ${formatUsd(token.marketCap)} | Liq ${formatUsd(token.liquidityUsd)} | Vol24 ${formatUsd(token.volume24h)} | Holders/tx ${token.holders}/${token.buys24h + token.sells24h}\n`;
-      text += `Buys/Sells 24h: ${token.buys24h}/${token.sells24h} | Age: ${Math.round(token.ageMinutes)}m\n`;
-      text += `<i>${escapeHtml(token.ai.reason)}</i>\n`;
-      if (url) text += `<a href="${escapeHtml(url)}">Открыть график/пул</a>\n`;
+      text += `<code>${escapeHtml(token.chain)}</code> ${escapeHtml(shortAddress(token.address))} | MC ${formatUsd(token.marketCap)} | Liq ${formatUsd(token.liquidityUsd)} | Vol ${formatUsd(token.volume24h)}\n`;
+      text += `Holders/tx ${token.holders}/${token.buys24h + token.sells24h} | B/S ${token.buys24h}/${token.sells24h} | Age ${Math.round(token.ageMinutes)}m\n`;
+      text += `<i>${escapeHtml(compactReason(token.ai.reason))}</i>\n`;
+      text += formatWalletIntel(token.walletIntel);
       text += '\n';
 
       if (url) {
@@ -113,8 +155,7 @@ export async function runWeb3Discovery(ctx) {
     });
     keyboard.text('🔄 Обновить Web3 top-10', 'web3_refresh');
 
-    await ctx.api.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
-    await ctx.reply(text, {
+    await ctx.api.editMessageText(loading.chat.id, loading.message_id, text, {
       parse_mode: 'HTML',
       disable_web_page_preview: true,
       reply_markup: keyboard,
