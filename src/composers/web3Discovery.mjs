@@ -73,7 +73,7 @@ function formatWalletIntel(walletIntel) {
   return (
     `WalletIntel ${walletRiskTag(walletIntel.riskLevel)} | ${clusterText}\n` +
     `Age ${formatOptionalNumber(walletIntel.walletAgeDays, 'd')} | fund ${escapeHtml(walletIntel.firstFundingSource || 'unknown')} | connected ${walletIntel.connectedWallets || 0} | rugpulls ${walletIntel.previousRugpulls || 0}/${walletIntel.previousTokens || 0}\n` +
-    `Sniper ${escapeHtml(walletIntel.sniperBehavior || 'NONE')} | pattern ${escapeHtml(walletIntel.transferPattern || 'unknown')} | realized ${escapeHtml(walletIntel.realizedProfit || '—')} | top5 ${toFixedSafe(distribution.top5Pct)}%\n` +
+    `Sniper ${escapeHtml(walletIntel.sniperBehavior || 'NONE')} | ${escapeHtml(walletIntel.transferPattern || 'unknown')} | PnL ${escapeHtml(walletIntel.realizedProfit || '—')} | top5 ${toFixedSafe(distribution.top5Pct)}%\n` +
     `<i>${escapeHtml(walletIntel.summary || 'wallet intelligence unavailable')}</i>\n`
   );
 }
@@ -137,9 +137,8 @@ export async function runWeb3Discovery(ctx) {
       const url = tokenUrl(token);
       const name = escapeHtml(token.symbol || shortAddress(token.address));
       text += `<b>${index + 1}. ${name}</b> ${verdictTag(token.ai.verdict)} | risk ${riskTag(token.ai.riskLevel)}\n`;
-      text += `<code>${escapeHtml(token.chain)}</code> ${escapeHtml(shortAddress(token.address))} | ${escapeHtml(token.dex)}\n`;
-      text += `MC ${formatUsd(token.marketCap)} | Liq ${formatUsd(token.liquidityUsd)} | Vol24 ${formatUsd(token.volume24h)} | Holders/tx ${token.holders}/${token.buys24h + token.sells24h}\n`;
-      text += `Buys/Sells 24h: ${token.buys24h}/${token.sells24h} | Age: ${Math.round(token.ageMinutes)}m\n`;
+      text += `<code>${escapeHtml(token.chain)}</code> ${escapeHtml(shortAddress(token.address))} | MC ${formatUsd(token.marketCap)} | Liq ${formatUsd(token.liquidityUsd)} | Vol ${formatUsd(token.volume24h)}\n`;
+      text += `Holders/tx ${token.holders}/${token.buys24h + token.sells24h} | B/S ${token.buys24h}/${token.sells24h} | Age ${Math.round(token.ageMinutes)}m\n`;
       text += `<i>${escapeHtml(token.ai.reason)}</i>\n`;
       text += formatWalletIntel(token.walletIntel);
       if (url) text += `<a href="${escapeHtml(url)}">Открыть график/пул</a>\n`;
