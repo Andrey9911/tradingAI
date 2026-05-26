@@ -1,0 +1,3 @@
+# Python helper scripts copied into /skills_agents are stdlib-only.
+# Keep this file so future Python skill dependencies can be added without
+# modifying existing Node.js package dependencies.
