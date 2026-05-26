@@ -1,0 +1,43 @@
+{
+  "schema": "trading-ai-ncp-project-state",
+  "version": "1.0.0",
+  "updatedAt": null,
+  "source": "context_agents/project_state.json",
+  "workflow": {
+    "pattern": "NCP",
+    "description": "Shared context object for multi-agent coordination without auto-trading or auto-posting."
+  },
+  "marketContext": {
+    "topTokens": [],
+    "filters": {
+      "liquidityUsdMin": 15000,
+      "holdersMin": 80,
+      "volume24hMin": 25000,
+      "ageMinutesMin": 5
+    }
+  },
+  "walletIntelligence": {
+    "metrics": [
+      "walletAgeDays",
+      "firstFundingSource",
+      "connectedWallets",
+      "previousTokens",
+      "previousRugpulls",
+      "realizedProfit",
+      "sniperBehavior",
+      "transferPattern",
+      "fundingCluster"
+    ],
+    "clusters": []
+  },
+  "agentOutputs": {
+    "engineer": null,
+    "copywriter": null,
+    "smm": null
+  },
+  "guardrails": {
+    "autoTrading": false,
+    "autoPosting": false,
+    "manualActionOnly": true
+  }
+}
