@@ -1,8 +1,8 @@
 const DEFAULT_DISCOVERY_FILTERS = {
-  liquidityUsd: parseFloat(process.env.TOKEN_DISCOVERY_MIN_LIQUIDITY_USD || '15000'),
-  holders: parseInt(process.env.TOKEN_DISCOVERY_MIN_HOLDERS || '80', 10),
-  volume24h: parseFloat(process.env.TOKEN_DISCOVERY_MIN_VOLUME_24H || '25000'),
-  ageMinutes: parseFloat(process.env.TOKEN_DISCOVERY_MIN_AGE_MINUTES || '5'),
+  liquidityUsd: [10000, 150000],
+  holders: [500, 10000],
+  volume24h: [25000, 500000],
+  ageMinutes: [10, 1440] // от 10 минут до суток
 };
 
 const DEFAULT_SOURCE_TIMEOUT_MS = parseInt(process.env.TOKEN_DISCOVERY_TIMEOUT_MS || '8000', 10);
@@ -17,7 +17,7 @@ const SUSPICIOUS_TOKEN_FLAGS = [
 ];
 
 const DEXSCREENER_SEARCH_QUERIES = ['pump', 'solana', 'meme', 'raydium', 'bonk', 'trump'];
-const GECKOTERMINAL_NETWORKS = ['solana', 'base', 'bsc', 'arbitrum'];
+const GECKOTERMINAL_NETWORKS = ['solana', 'base', 'bsc', 'arbitrum', 'ton'];
 
 const BLUE_CHIP_SYMBOLS = new Set([
   'BTC',
@@ -74,6 +74,8 @@ function normalizeChain(chain) {
   const value = String(chain || '').toLowerCase();
   if (value === 'ethereum') return 'eth';
   if (value === 'binance-smart-chain') return 'bsc';
+  if(value === 'solana') return 'sol';
+  if(value  === 'ton' || value === 'the open network') return 'ton';
   return value;
 }
 
@@ -106,14 +108,30 @@ function hasRiskFlags(token) {
 }
 
 function applyFilters(tokens, filters) {
-  return tokens.filter(token =>
-    !BLUE_CHIP_SYMBOLS.has(String(token.symbol || '').toUpperCase()) &&
-    !hasRiskFlags(token) &&
-    token.liquidityUsd > filters.liquidityUsd &&
-    Math.max(token.holders, token.buys24h + token.sells24h) > filters.holders &&
-    token.volume24h > filters.volume24h &&
-    token.ageMinutes > filters.ageMinutes,
-  );
+  return tokens.filter(token => {
+    // 1. Стандартные проверки (оставляем как было)
+    if (BLUE_CHIP_SYMBOLS.has(String(token.symbol || '').toUpperCase())) return false;
+    if (hasRiskFlags(token)) return false;
+
+    // 2. Проверка ликвидности (диапазон)
+    const liq = parseFloat(token.liquidityUsd || 0);
+    if (liq < filters.liquidityUsd[0] || liq > filters.liquidityUsd[1]) return false;
+
+    // 3. Проверка холдеров/активности (оставляем твою логику, но в рамках диапазона)
+    // Если ты хочешь диапазон и для холдеров:
+    const activity = Math.max(token.holders || 0, (token.buys24h || 0) + (token.sells24h || 0));
+    if (activity < filters.holders[0] || activity > filters.holders[1]) return false;
+
+    // 4. Проверка объема (диапазон)
+    const vol = parseFloat(token.volume24h || 0);
+    if (vol < filters.volume24h[0] || vol > filters.volume24h[1]) return false;
+
+    // 5. Проверка возраста (диапазон)
+    const age = parseFloat(token.ageMinutes || 0);
+    if (age < filters.ageMinutes[0] || age > filters.ageMinutes[1]) return false;
+
+    return true;
+  });
 }
 
 function scoreToken(token) {
@@ -242,12 +260,13 @@ export class TokenDiscoveryService {
       this.fetchDexScreenerTokens(onStatusUpdate),
       this.fetchGeckoTerminalTokens(onStatusUpdate),
     ]);
-
+  
     const merged = uniqBy(
       [...pumpTokens, ...dexTokens, ...geckoTokens],
       token => `${token.chain}:${token.address || token.pairAddress}`.toLowerCase(),
     );
-
+  
+    // Передаем токены и новые фильтры-диапазоны
     return applyFilters(merged, filters)
       .map(token => ({ ...token, score: scoreToken(token) }))
       .sort((a, b) => b.score - a.score)

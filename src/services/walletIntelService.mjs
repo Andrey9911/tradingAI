@@ -1,5 +1,5 @@
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.WALLET_INTEL_TIMEOUT_MS || '8000', 10);
-const DEFAULT_SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+const DEFAULT_SOLANA_RPC_URL = `${process.env.SOLANA_RPC_URL}?api-key=${process.env.SOLANA_RPC_KEY}` || 'https://api.mainnet-beta.solana.com';
 const DEFAULT_MAX_HOLDER_WALLETS = parseInt(process.env.WALLET_INTEL_MAX_HOLDER_WALLETS || '6', 10);
 const CLUSTER_TIME_WINDOW_MINUTES = parseFloat(process.env.WALLET_INTEL_CLUSTER_WINDOW_MINUTES || '3');
 const HIGH_SUPPLY_SHARE = parseFloat(process.env.WALLET_INTEL_HIGH_SUPPLY_SHARE || '5');
@@ -218,8 +218,9 @@ export class WalletIntelService {
   }
 
   async analyzeToken(token, onStatusUpdate = null) {
+    const chain = String(token.chain || '').toLowerCase().trim();
     try {
-      if (token.chain !== 'solana') {
+      if (chain !== 'solana' && chain !== 'sol') {
         return this.analyzeUnsupportedChain(token);
       }
       return await this.analyzeSolanaToken(token, onStatusUpdate);

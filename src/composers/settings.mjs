@@ -38,55 +38,45 @@ function parseNumber(input) {
 
 export async function showSettingsMenu(ctx) {
   const s = getSignalSettings(ctx);
-  const tokenFilters = getTokenDiscoveryFilters(ctx);
+  const t = getTokenDiscoveryFilters(ctx); // для краткости назовем t
+
   const keyboard = new InlineKeyboard()
-    .text(`📈 Спред продажи больще ${s.sellSpreadPct}%`, 'settings_edit_sellSpreadPct')
-    .text(`📉 Вход: 24ч рост меньше +${s.maxEntryChg24Pct}%`, 'settings_edit_maxEntryChg24Pct')
+    .text(`📈 Спред продажи > ${s.sellSpreadPct}%`, 'settings_edit_sellSpreadPct')
+    .text(`📉 Вход: 24ч рост < +${s.maxEntryChg24Pct}%`, 'settings_edit_maxEntryChg24Pct')
     .row()
-    .text(`💧 Token liquidity > $${tokenFilters.liquidityUsd}`, 'settings_edit_token_liquidityUsd')
-    .text(`👥 Holders > ${tokenFilters.holders}`, 'settings_edit_token_holders')
+    .text(`💧 Liq: $${t.liquidityUsd[0]}-$${t.liquidityUsd[1]}`, 'settings_edit_token_liquidityUsd')
+    .text(`👥 Hold: ${t.holders[0]}-${t.holders[1]}`, 'settings_edit_token_holders')
     .row()
-    .text(`📊 Volume 24h > $${tokenFilters.volume24h}`, 'settings_edit_token_volume24h')
-    .text(`⏱ Age > ${tokenFilters.ageMinutes}m`, 'settings_edit_token_ageMinutes')
+    .text(`📊 Vol: $${t.volume24h[0]}-$${t.volume24h[1]}`, 'settings_edit_token_volume24h')
+    .text(`⏱ Age: ${t.ageMinutes[0]}-${t.ageMinutes[1]}m`, 'settings_edit_token_ageMinutes')
     .row()
     .text('◀️ Назад в меню', 'settings_back_main');
 
   const text = `<b>⚙️ Настройки сигналов</b>\n\n` +
-    `1) Продажа: спред больще <b>${s.sellSpreadPct}%</b>\n` +
+    `1) Продажа: спред больше <b>${s.sellSpreadPct}%</b>\n` +
     `2) Вход: 24ч рост меньше <b>+${s.maxEntryChg24Pct}%</b>\n\n` +
     `<b>Web3 token discovery</b>\n` +
-    `• liquidityUsd &gt; <b>${tokenFilters.liquidityUsd}</b>\n` +
-    `• holders &gt; <b>${tokenFilters.holders}</b>\n` +
-    `• volume24h &gt; <b>${tokenFilters.volume24h}</b>\n` +
-    `• ageMinutes &gt; <b>${tokenFilters.ageMinutes}</b>\n\n` +
-    `Выберите параметр и отправьте новое число в чате.`;
+    `• Ликвидность: <b>${t.liquidityUsd[0]} — ${t.liquidityUsd[1]} USD</b>\n` +
+    `• Холдеры: <b>${t.holders[0]} — ${t.holders[1]} чел.</b>\n` +
+    `• Объем 24ч: <b>${t.volume24h[0]} — ${t.volume24h[1]} USD</b>\n` +
+    `• Возраст: <b>${t.ageMinutes[0]} — ${t.ageMinutes[1]} мин.</b>\n\n` +
+    `Выберите параметр для изменения.`;
 
   await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
 }
 
 // --- Кнопки меню настроек ---
-settingsComposer.callbackQuery('settings_edit_sellSpreadPct', async (ctx) => {
-  await ctx.answerCallbackQuery().catch(() => {});
-  ctx.session.settingsStep = 'sellSpreadPct';
-  await ctx.reply('Измените значение спреда продажи (например: 5 или 7.5).');
-});
-
-settingsComposer.callbackQuery('settings_edit_maxEntryChg24Pct', async (ctx) => {
-  await ctx.answerCallbackQuery().catch(() => {});
-  ctx.session.settingsStep = 'maxEntryChg24Pct';
-  await ctx.reply('Измените максимум роста за 24ч для входа (например: 15).');
-});
-
 settingsComposer.callbackQuery(/^settings_edit_token_(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
   const field = ctx.match[1];
-  if (!TOKEN_FILTER_LABELS[field]) {
-    await ctx.reply('Неизвестный фильтр token discovery.');
+  
+  if (!TOKEN_FILTER_LABELS[field]) { // Если у тебя есть этот объект с названиями
+    await ctx.reply('Неизвестный фильтр.');
     return;
   }
 
   ctx.session.settingsStep = `tokenDiscovery.${field}`;
-  await ctx.reply(`Измените фильтр "${TOKEN_FILTER_LABELS[field]}" для Web3 token discovery.`);
+  await ctx.reply(`Измените фильтр "${TOKEN_FILTER_LABELS[field]}".\n\nВведите диапазон <b>через дефис</b> (например: <code>100-150000</code>).`, { parse_mode: 'HTML' });
 });
 
 settingsComposer.callbackQuery('settings_back_main', async (ctx) => {
@@ -100,28 +90,55 @@ settingsComposer.on('message:text', async (ctx, next) => {
   const step = ctx.session?.settingsStep;
   if (!step) return next();
 
-  const value = parseNumber(ctx.message.text);
-  if (!Number.isFinite(value)) {
-    await ctx.reply('Это не число. Введите, например: 5 или 15.5');
-    return;
-  }
+  const text = ctx.message.text.trim();
 
-  // Ограничиваем разумными пределами.
-  if (value < 0 || value > 100) {
-    await ctx.reply('Число вне диапазона 0..100. Попробуйте снова.');
-    return;
-  }
-
+  // --- ЛОГИКА ДЛЯ ДИАПАЗОНОВ (Web3 Filters) ---
   if (step.startsWith('tokenDiscovery.')) {
     const field = step.split('.')[1];
-    const filters = getTokenDiscoveryFilters(ctx);
-    filters[field] = value;
-  } else {
-    const s = getSignalSettings(ctx);
-    s[step] = value;
-  }
-  ctx.session.settingsStep = null;
+    const parts = text.split('-');
 
-  await showSettingsMenu(ctx);
-  return await next();
+    if (parts.length !== 2) {
+      return ctx.reply('❌ Неверный формат. Введите два числа через дефис, например: 10000-150000');
+    }
+
+    const min = parseFloat(parts[0].trim());
+    const max = parseFloat(parts[1].trim());
+
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      return ctx.reply('❌ Это не числа. Попробуйте еще раз (например: 100-5000).');
+    }
+
+    if (min >= max || min < 0) {
+      return ctx.reply('❌ Ошибка: первое число должно быть меньше второго, и они не могут быть отрицательными.');
+    }
+
+    // Сохраняем массив
+    const tokenFilters = getTokenDiscoveryFilters(ctx);
+    tokenFilters[field] = [min, max];
+
+    ctx.session.settingsStep = null;
+    await ctx.reply(`✅ Диапазон успешно обновлен: <b>${min} — ${max}</b>`, { parse_mode: 'HTML' });
+    
+    // Возвращаем меню (вызови функцию показа меню)
+    return showSettingsMenu(ctx);
+  }
+
+  // --- ЛОГИКА ДЛЯ ПРОЦЕНТОВ (Спред и Рост) ---
+  const value = parseFloat(text); // или твоя функция parseNumber(text)
+  
+  if (!Number.isFinite(value)) {
+    return ctx.reply('❌ Это не число. Введите, например: 5 или 15.5');
+  }
+
+  // Ограничиваем разумными пределами ТОЛЬКО для процентов
+  if (value < 0 || value > 100) {
+    return ctx.reply('❌ Процент должен быть от 0 до 100. Попробуйте снова.');
+  }
+
+  const s = getSignalSettings(ctx);
+  s[step] = value; // step тут равен 'sellSpreadPct' или 'maxEntryChg24Pct'
+  
+  ctx.session.settingsStep = null;
+  await ctx.reply(`✅ Значение обновлено: <b>${value}%</b>`, { parse_mode: 'HTML' });
+  return showSettingsMenu(ctx);
 });
