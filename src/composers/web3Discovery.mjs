@@ -73,6 +73,7 @@ function formatWalletIntel(walletIntel) {
   return (
     `WalletIntel ${walletRiskTag(walletIntel.riskLevel)} | ${clusterText}\n` +
     `Age ${formatOptionalNumber(walletIntel.walletAgeDays, 'd')} | fund ${escapeHtml(walletIntel.firstFundingSource || 'unknown')} | connected ${walletIntel.connectedWallets || 0} | rugpulls ${walletIntel.previousRugpulls || 0}/${walletIntel.previousTokens || 0}\n` +
+    `Dev ${escapeHtml(walletIntel.devWallet || '—')} | top holder ${toFixedSafe(distribution.topHolderPct)}% | high supply ${distribution.highSupplyWallets || 0}\n` +
     `Sniper ${escapeHtml(walletIntel.sniperBehavior || 'NONE')} | ${escapeHtml(walletIntel.transferPattern || 'unknown')} | PnL ${escapeHtml(walletIntel.realizedProfit || '—')} | top5 ${toFixedSafe(distribution.top5Pct)}%\n` +
     `<i>${escapeHtml(walletIntel.summary || 'wallet intelligence unavailable')}</i>\n`
   );
