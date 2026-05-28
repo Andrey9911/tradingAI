@@ -1,3 +1,5 @@
+import { TonService } from './tonService.mjs';
+
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.WALLET_INTEL_TIMEOUT_MS || '8000', 10);
 const DEFAULT_SOLANA_RPC_URL = `${process.env.SOLANA_RPC_URL}?api-key=${process.env.SOLANA_RPC_KEY}` || 'https://api.mainnet-beta.solana.com';
 const DEFAULT_MAX_HOLDER_WALLETS = parseInt(process.env.WALLET_INTEL_MAX_HOLDER_WALLETS || '6', 10);
@@ -201,10 +203,12 @@ export class WalletIntelService {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     solanaRpcUrl = DEFAULT_SOLANA_RPC_URL,
     maxHolderWallets = DEFAULT_MAX_HOLDER_WALLETS,
+    tonService = new TonService({ timeoutMs }),
   } = {}) {
     this.timeoutMs = timeoutMs;
     this.solanaRpcUrl = solanaRpcUrl;
     this.maxHolderWallets = maxHolderWallets;
+    this.tonService = tonService;
   }
 
   async analyzeTopTokens(tokens, onStatusUpdate = null) {
@@ -220,6 +224,9 @@ export class WalletIntelService {
   async analyzeToken(token, onStatusUpdate = null) {
     const chain = String(token.chain || '').toLowerCase().trim();
     try {
+      if (chain === 'ton') {
+        return await this.tonService.analyzeTonToken(token, onStatusUpdate);
+      }
       if (chain !== 'solana' && chain !== 'sol') {
         return this.analyzeUnsupportedChain(token);
       }

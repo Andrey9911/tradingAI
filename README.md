@@ -46,6 +46,18 @@ Bash
 cp .env.example .env
 Fill in your credentials (API keys for Bybit, OpenRouter, and Supabase).
 
+TON Intel placeholders:
+
+```bash
+TONAPI_KEY=<tonapi.io bearer token>
+TONAPI_BASE_URL=https://tonapi.io/v2
+TONAPI_TIMEOUT_MS=8000
+TONAPI_RETRY_DELAY_MS=1500
+TONAPI_MAX_RETRIES=2
+```
+
+`TONAPI_KEY` is optional for local smoke tests with mocked TonAPI responses, but production Jetton analytics should use a real tonapi.io key because the free tier is rate-limited to roughly 1 RPS.
+
 Autoposting placeholders:
 
 ```bash
