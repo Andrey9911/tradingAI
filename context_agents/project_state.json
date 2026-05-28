@@ -35,9 +35,28 @@
     "copywriter": null,
     "smm": null
   },
+  "autoposting": {
+    "enabled": false,
+    "approvalRequired": true,
+    "platforms": {
+      "telegram": {
+        "mode": "mtproto",
+        "status": "needs_env"
+      },
+      "habr": {
+        "mode": "draft_only",
+        "status": "official_public_publish_api_unavailable"
+      },
+      "dzen": {
+        "mode": "rss_export",
+        "status": "needs_feed_url"
+      }
+    },
+    "pendingDraft": null
+  },
   "guardrails": {
     "autoTrading": false,
-    "autoPosting": false,
+    "autoPosting": "approval_required",
     "manualActionOnly": true
   }
 }

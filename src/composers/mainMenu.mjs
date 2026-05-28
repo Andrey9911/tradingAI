@@ -5,6 +5,7 @@ import { runSignalSearch } from './signals.mjs';
 import { showSettingsMenu } from './settings.mjs';
 // import { runAiSignal } from './aiSignalComposer.mjs';
 import { runWeb3Discovery } from './web3Discovery.mjs';
+import { showAutopostingMenu } from './autoposting.mjs';
 
 
 export const mainMenuComposer = new Composer();
@@ -16,6 +17,7 @@ export function buildMainMenuKeyboard() {
     .text('🔍 Поиск сигналов')
     .text('⚙️ Настройки')
     .text('🧬 Web3 top-10')
+    .text('📣 Автопостинг').row()
     .text('⚡ Позиции (фьючи)')
     .resized();
 }
@@ -59,6 +61,9 @@ mainMenuComposer.on('message:text', async (ctx, next) => {
   }
   if (ctx.message.text === '🧬 Web3 top-10') {
     await runWeb3Discovery(ctx);
+  }
+  if (ctx.message.text === '📣 Автопостинг') {
+    await showAutopostingMenu(ctx);
   }
   if (ctx.message.text === '⚡ Позиции (фьючи)') {
     await ctx.reply('⚡ Фьючерсные позиции — функционал в разработке (скоро).');
@@ -105,6 +110,9 @@ mainMenuComposer.callbackQuery(/^menu_/, async (ctx) => {
       break;
     case 'web3':
       await runWeb3Discovery(ctx);
+      break;
+    case 'autoposting':
+      await showAutopostingMenu(ctx);
       break;
     case 'positions':
       await ctx.reply('⚡ Фьючерсные позиции — функционал в разработке (скоро).');

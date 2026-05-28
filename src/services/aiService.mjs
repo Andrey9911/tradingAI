@@ -414,7 +414,7 @@ try {
   /**
    * Краткое объяснение на русском (не менять вердикт — он уже вычислен правилами).
    */
-async explainSignalAnalysisNarrative(ctx) {
+  async explainSignalAnalysisNarrative(ctx) {
     const prompt = `Ты крипто-аналитик. Вердикт и оценка уже рассчитаны детерминированно — их НЕЛЬЗЯ менять, только объясни почему так может выглядеть рынок.
 
 Символ: ${ctx.symbol}, сторона: ${ctx.side}
@@ -441,6 +441,40 @@ SL в сигнале: ${ctx.hasSl ? 'да' : 'нет'}
       console.error('explainSignalAnalysisNarrative:', err);
     }
     return 'Краткий вывод сформирован по метрикам; нейросеть не смогла добавить пояснение.';
+  }
+
+  async createAutopostingDraft(context) {
+    const { diffSummary, diffText, pastPosts = [], idea = '' } = context;
+    const prompt = `Ты SMM-агент Trading AI. Подготовь автопостинг draft по изменениям в коде, но НЕ публикуй его.
+
+Задача:
+- собрать понятную новость из push/code diff;
+- сравнить с прошлыми постами, чтобы не повторять стиль и смысл дословно;
+- сделать Telegram post, Habr markdown draft и Dzen HTML body;
+- сохранить позиционирование проекта: AI-отчеты и сигналы для ручного решения, не автотрейдинг;
+- вернуть только JSON без markdown.
+
+Формат:
+{"title":"","telegramText":"","habrMarkdown":"","dzenHtml":"","uniquenessNotes":""}
+
+Идея пользователя:
+${String(idea || 'нет').slice(0, 2000)}
+
+Сводка изменений:
+${JSON.stringify(diffSummary, null, 2)}
+
+Diff:
+${String(diffText || '').slice(0, 14000)}
+
+Прошлые посты:
+${pastPosts.map((post, index) => `${index + 1}. ${String(post).slice(0, 700)}`).join('\n\n') || 'нет'}`;
+
+    const data = await this.chatWithModelFallback({
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1800,
+      temperature: 0.55,
+    });
+    return data?.choices?.[0]?.message?.content?.trim() || '';
   }
 
 }
