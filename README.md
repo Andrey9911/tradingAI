@@ -19,6 +19,8 @@ Framework: grammY
 
 API: bybit-api (V5 Rest Client)
 
+Autoposting: GramJS/MTProto for Telegram after owner approval; Habr draft export because the public Habr API is internal-only; Dzen RSS export for Studio ingestion.
+
 Database: Supabase (PostgreSQL)
 
 AI Engine: OpenRouter API
@@ -43,6 +45,27 @@ Create a .env file in the root directory based on the provided example:
 Bash
 cp .env.example .env
 Fill in your credentials (API keys for Bybit, OpenRouter, and Supabase).
+
+Autoposting placeholders:
+
+```bash
+AUTOPOSTING_ENABLED=false
+AUTOPOSTING_PLATFORMS=telegram,habr,dzen
+TELEGRAM_MTPROTO_API_ID=<my.telegram.org api_id>
+TELEGRAM_MTPROTO_API_HASH=<my.telegram.org api_hash>
+TELEGRAM_MTPROTO_SESSION=<GramJS StringSession>
+TELEGRAM_AUTOPOST_CHANNEL=@your_channel
+AUTOPOSTING_TELEGRAM_ENABLED=true
+AUTOPOSTING_HABR_ENABLED=true
+HABR_PROFILE_URL=https://habr.com/ru/users/<username>/
+AUTOPOSTING_DZEN_ENABLED=true
+DZEN_RSS_TITLE="Trading AI autopost drafts"
+DZEN_RSS_FEED_URL=https://example.com/dzen.xml
+DZEN_SITE_URL=https://example.com
+DZEN_RSS_OUTPUT_PATH=data/autoposting-dzen.xml
+```
+
+Autoposting is approval-first: the SMM agent can draft from code changes and past-post style samples, but publishing requires the owner to approve the pending draft in Telegram.
 
 4. Run the Bot
 Bash
