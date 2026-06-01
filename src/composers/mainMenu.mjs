@@ -27,7 +27,8 @@ export function buildMainMenuKeyboard() {
 
 /** Отправить приветствие и reply-клавиатуру главного меню */
 export async function sendMainMenu(ctx) {
-  await ctx.reply('👋 Торговый ассистент Bybit\nВыберите действие:', {
+  const mtproto = ctx.session?.telegramMtprotoReady ? '\n🔐 MTProto session восстановлена.' : '';
+  await ctx.reply(`👋 Торговый ассистент Bybit${mtproto}\nВыберите действие:`, {
     reply_markup: buildMainMenuKeyboard(),
   });
 }

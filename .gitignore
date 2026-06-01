@@ -1,2 +1,5 @@
 /.env
 /node_modules
+/data/*.enc.json
+/data/trading-metrics.json
+/data/trading-post-basket.json

@@ -62,6 +62,18 @@ const skillCatalog = {
     root: path.join(SKILLS_DIR, 'social', 'copywriting'),
     source: 'https://github.com/alirezarezvani/claude-skills/tree/main/marketing-skill/skills/copywriting',
   },
+  telegramAutoposting: {
+    id: 'telegram-autoposting',
+    group: 'social',
+    root: path.join(SKILLS_DIR, 'social', 'telegram-autoposting'),
+    source: 'user-provided previous-project examples: botTelegram.mjs/myBlog.json',
+  },
+  postStylePreservation: {
+    id: 'post-style-preservation',
+    group: 'social',
+    root: path.join(SKILLS_DIR, 'social', 'post-style-preservation'),
+    source: 'user-provided previous-project examples: manager_menu_func.mjs/myBlog.json',
+  },
 };
 
 function parseSkillMetadata(markdown) {
@@ -177,6 +189,8 @@ async function buildTools(skills) {
   const financeSkill = skills.financialAnalyst;
   const pulseSkill = skills.pulse;
   const socialAnalyzerSkill = skills.socialMediaAnalyzer;
+  const telegramAutopostingSkill = skills.telegramAutoposting;
+  const postStylePreservationSkill = skills.postStylePreservation;
 
   return {
     optimizeSqlQuery: new Tool({
@@ -265,6 +279,27 @@ print(json.dumps({'metrics': metrics, 'insights': insights}, ensure_ascii=False)
         return jsonFromStdout(result.stdout);
       },
     }),
+    planTelegramAutoposting: new Tool({
+      name: 'planTelegramAutoposting',
+      description: 'Plan approval-first Telegram MTProto publishing with encrypted session restore.',
+      skill: telegramAutopostingSkill,
+      run: async ({ channel = '@AImodelingAgency' } = {}) => ({
+        channel,
+        approvalFirst: true,
+        sessionFile: 'data/telegram-mtproto-session.enc.json',
+        fallbackChannel: '@myPublicGroupAI',
+      }),
+    }),
+    preservePostStyle: new Tool({
+      name: 'preservePostStyle',
+      description: 'Summarize style-preservation inputs for social draft generation.',
+      skill: postStylePreservationSkill,
+      run: async ({ posts = [], event = {} } = {}) => ({
+        samples: posts.length,
+        eventType: event.type || 'unknown',
+        guardrails: ['no copied phrases', 'manual trading decisions only', 'approval basket first'],
+      }),
+    }),
   };
 }
 
@@ -297,7 +332,12 @@ async function loadAgents(tools) {
       id: 'smm',
       role: 'Telegram/SMM signal packaging analyst',
       config: smmConfig,
-      tools: [tools.analyzeSocialMetrics, tools.calculatePulseWindow],
+      tools: [
+        tools.analyzeSocialMetrics,
+        tools.calculatePulseWindow,
+        tools.planTelegramAutoposting,
+        tools.preservePostStyle,
+      ],
     }),
   ];
 }
@@ -346,6 +386,11 @@ async function runSmoke(orchestrator) {
       referenceDate: '2026-05-25',
     }),
     analyzeSocialMetrics: await tools.analyzeSocialMetrics.run(),
+    planTelegramAutoposting: await tools.planTelegramAutoposting.run(),
+    preservePostStyle: await tools.preservePostStyle.run({
+      posts: ['пример прошлого поста'],
+      event: { type: 'trading_metrics' },
+    }),
   };
 
   return {

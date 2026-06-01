@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trading AI MTProto Auth</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; padding: 18px; background: #111827; color: #f9fafb; }
+      label { display: block; margin: 12px 0 6px; color: #cbd5e1; }
+      input { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 10px; border: 1px solid #334155; background: #0f172a; color: #f9fafb; }
+      button { width: 100%; margin-top: 16px; padding: 12px; border: 0; border-radius: 10px; background: #2563eb; color: white; font-weight: 700; }
+      .muted { color: #94a3b8; font-size: 13px; }
+      .hidden { display: none; }
+      pre { white-space: pre-wrap; background: #020617; padding: 12px; border-radius: 10px; }
+    </style>
+  </head>
+  <body>
+    <h2>🔐 MTProto authorization</h2>
+    <p class="muted">Сессия сохраняется в encrypted file и будет использоваться для approval-first постинга.</p>
+    <section id="credentials">
+      <label>ID_TELEGRAM</label>
+      <input id="telegramId" inputmode="numeric" placeholder="Ваш Telegram user id" />
+      <label>API_ID</label>
+      <input id="apiId" inputmode="numeric" placeholder="my.telegram.org api_id" />
+      <label>API_HASH</label>
+      <input id="apiHash" placeholder="my.telegram.org api_hash" />
+      <label>Phone</label>
+      <input id="phoneNumber" placeholder="+79990000000" />
+      <button onclick="startLogin()">Отправить временный код</button>
+    </section>
+    <section id="verification" class="hidden">
+      <label>Temporary code</label>
+      <input id="code" inputmode="numeric" placeholder="12345" />
+      <label>2FA password (если Telegram запросит)</label>
+      <input id="password" type="password" placeholder="optional" />
+      <button onclick="verifyLogin()">Проверить и сохранить session</button>
+    </section>
+    <pre id="status">Готово к авторизации.</pre>
+    <script>
+      const tg = window.Telegram?.WebApp;
+      tg?.ready?.();
+      const initData = tg?.initData || '';
+
+      function value(id) {
+        return document.getElementById(id).value.trim();
+      }
+
+      function setStatus(text) {
+        document.getElementById('status').textContent = text;
+      }
+
+      async function postJson(url, body) {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...body, initData }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.status === 'error') throw new Error(data.message || 'Request failed');
+        return data;
+      }
+
+      async function startLogin() {
+        try {
+          setStatus('Отправляю code...');
+          const data = await postJson('/api/telegram-auth/start', {
+            telegramId: value('telegramId'),
+            apiId: value('apiId'),
+            apiHash: value('apiHash'),
+            phoneNumber: value('phoneNumber'),
+          });
+          document.getElementById('verification').classList.remove('hidden');
+          setStatus(data.isCodeViaApp ? 'Код отправлен в Telegram app.' : 'Код отправлен.');
+        } catch (err) {
+          setStatus(`Ошибка: ${err.message}`);
+        }
+      }
+
+      async function verifyLogin() {
+        try {
+          setStatus('Проверяю code...');
+          const data = await postJson('/api/telegram-auth/verify', {
+            telegramId: value('telegramId'),
+            code: value('code'),
+            password: value('password'),
+          });
+          setStatus(`Session saved.\nTarget channel: ${data.preferredChannel?.handle || 'не найден'}\nChannels found: ${data.channels?.length || 0}`);
+          tg?.close?.();
+        } catch (err) {
+          setStatus(`Ошибка: ${err.message}`);
+        }
+      }
+    </script>
+  </body>
+</html>

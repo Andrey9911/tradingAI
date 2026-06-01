@@ -3,6 +3,9 @@ import { AuthService } from '../services/authService.mjs';
 import { BybitService } from '../services/bybitService.mjs';
 import { AIService } from '../services/aiService.mjs';
 import { runSignalSearch } from '../composers/signals.mjs'
+import { AutopostingService } from '../services/autopostingService.mjs';
+import { TelegramSessionService } from '../services/telegramSessionService.mjs';
+import { TradingMetricsService, summarizeTradingMetrics } from '../services/tradingMetricsService.mjs';
 
 const ORDERS_PER_PAGE = 5;
 
@@ -10,6 +13,32 @@ const ORDERS_PER_PAGE = 5;
 const SELL_SPREAD_PCT = parseFloat(process.env.AI_SELL_SPREAD_PCT || '2');
 /** Порог для «хороший момент для усреднения/докупки»: цена ниже последней покупки на X% */
 const BUY_DIP_PCT = parseFloat(process.env.AI_BUY_DIP_PCT || '5');
+
+async function createTradingPostDraft(ctx, metric) {
+  if (String(process.env.TRADING_METRICS_AUTO_DRAFTS || 'true').toLowerCase() !== 'true') return null;
+  const metrics = new TradingMetricsService();
+  const recentMetrics = await metrics.listMetrics(30);
+  const mtproto = new TelegramSessionService();
+  const sessionConfig = await mtproto.getSessionConfig(ctx.from?.id);
+  const channelHandle = sessionConfig?.preferredChannel?.handle;
+  const pastPosts = channelHandle
+    ? await mtproto.fetchRecentChannelPosts(ctx.from?.id, channelHandle, 15).catch(() => [])
+    : [];
+  const pendingDraft = await new AutopostingService().createTradingMetricsDraft({
+    metric,
+    metricsSummary: summarizeTradingMetrics(recentMetrics),
+    pastPosts,
+  });
+  pendingDraft.ownerId = ctx.from?.id;
+  const basketDraft = await metrics.addDraft(pendingDraft, metric);
+  await ctx.reply(
+    `🧺 SMM-агент создал draft по результату сделки и добавил его в корзину.\n` +
+      `Draft ID: <code>${basketDraft.id}</code>\n` +
+      `Откройте 📣 Автопостинг → 🧺 Корзина постов для одобрения.`,
+    { parse_mode: 'HTML' },
+  ).catch(() => {});
+  return basketDraft;
+}
 
 function escapeHtml(s) {
   return String(s)
@@ -352,6 +381,15 @@ ordersComposer.callbackQuery(/^exec_buy_(.+)_(\d+)$/, async (ctx) => {
 
   // 3. Выполняем ордер
   const order = await bybit.placeMarketBuyOrder(coin, amountToSpend);
+  const metric = await new TradingMetricsService().recordTrade({
+    side: 'Buy',
+    coin,
+    symbol: `${coin}USDT`,
+    percent,
+    spentUsdt: amountToSpend,
+    order,
+    source: 'orders.exec_buy',
+  });
 
   await ctx.editMessageText(
     `✅ <b>Ордер исполнен!</b>\n\n` +
@@ -360,6 +398,7 @@ ordersComposer.callbackQuery(/^exec_buy_(.+)_(\d+)$/, async (ctx) => {
     `ID ордера: <code>${order.orderId}</code>`,
     { parse_mode: 'HTML' }
   );
+  await createTradingPostDraft(ctx, metric);
 });
 
 // Выполнение продажи
@@ -394,6 +433,15 @@ ordersComposer.callbackQuery(/^exec_sell_(.+)_(\d+)$/, async (ctx) => {
 
     // 3. Выполняем ордер
     const order = await bybit.placeMarketSellOrder(symbol, formattedQty);
+    const metric = await new TradingMetricsService().recordTrade({
+      side: 'Sell',
+      coin,
+      symbol,
+      percent,
+      quantity: formattedQty,
+      order,
+      source: 'orders.exec_sell',
+    });
 
     await ctx.editMessageText(
       `✅ <b>Ордер исполнен!</b>\n\n` +
@@ -402,6 +450,7 @@ ordersComposer.callbackQuery(/^exec_sell_(.+)_(\d+)$/, async (ctx) => {
       `ID ордера: <code>${order.orderId}</code>`,
       { parse_mode: 'HTML' }
     );
+    await createTradingPostDraft(ctx, metric);
   } catch (err) {
     console.error('Ошибка при продаже:', err);
     await ctx.reply(`❌ Ошибка исполнения: ${err.message}`);
