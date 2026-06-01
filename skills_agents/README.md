@@ -14,10 +14,12 @@ Copied only skills that support the requested multi-agent crypto-bot architectur
 - `social/social-content` — Telegram/social draft structure and repurposing strategy.
 - `social/content-production` — long-form Habr/Dzen draft pipeline.
 - `social/copywriting` — concise copywriting rules for summaries and article sections.
+- `social/telegram-autoposting` — approval-first MTProto posting with encrypted session restore and admin-channel discovery, derived from the provided previous-project examples without copying functions.
+- `social/post-style-preservation` — style/uniqueness extraction from previous channel posts before creating new trading/code-change drafts.
 
 ## Explicit exclusions
 
 - No auto-trading.
-- No auto-posting implementation.
-- Social skills are connected only as analysis/draft tools.
+- No unsupervised auto-posting implementation: Telegram publish stays approval-first.
+- Social skills are connected as analysis/draft tools and explicit approval tools.
 - Each copied file includes source attribution to its original upstream path.

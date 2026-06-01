@@ -5,6 +5,7 @@ import {ordersComposer} from './composers/orders.mjs'
 import {authComposer} from './composers/auth.mjs'
 import {settingsComposer} from './composers/settings.mjs'
 import {autopostingComposer} from './composers/autoposting.mjs'
+import { TelegramSessionService } from './services/telegramSessionService.mjs';
 
 // import {aiSignalComposer} from './composers/aiSignalComposer.mjs'
 
@@ -38,6 +39,13 @@ export function createBot(token) {
   bot.use(session({
     initial: () => ({ /* ... ваши поля */ }),
   }));
+
+  bot.use(async (ctx, next) => {
+    if (ctx.message?.text === '/start') {
+      ctx.session.telegramMtprotoReady = await new TelegramSessionService().hasSession(ctx.from?.id);
+    }
+    await next();
+  });
 
   bot.use(mainMenuComposer);
   bot.use(assetsComposer);

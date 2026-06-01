@@ -6,6 +6,7 @@ import RSS from 'rss';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import { AIService } from './aiService.mjs';
+import { TelegramSessionService } from './telegramSessionService.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(__filename), '..', '..');
@@ -166,6 +167,7 @@ export function getAutopostingEnvTemplate() {
     TELEGRAM_MTPROTO_API_ID: '<my.telegram.org api_id>',
     TELEGRAM_MTPROTO_API_HASH: '<my.telegram.org api_hash>',
     TELEGRAM_MTPROTO_SESSION: '<GramJS StringSession>',
+    TELEGRAM_MTPROTO_SESSION_FILE: 'data/telegram-mtproto-session.enc.json',
     TELEGRAM_AUTOPOST_CHANNEL: '@channel_username_or_numeric_id',
     AUTOPOSTING_TELEGRAM_ENABLED: 'true',
     AUTOPOSTING_HABR_ENABLED: 'true',
@@ -175,6 +177,8 @@ export function getAutopostingEnvTemplate() {
     DZEN_RSS_FEED_URL: 'https://example.com/dzen.xml',
     DZEN_SITE_URL: 'https://example.com',
     DZEN_RSS_OUTPUT_PATH: 'data/autoposting-dzen.xml',
+    TRADING_METRICS_FILE: 'data/trading-metrics.json',
+    TRADING_POST_BASKET_FILE: 'data/trading-post-basket.json',
   };
 }
 
@@ -265,6 +269,23 @@ ${extractStyleSamples(pastPosts) || 'нет'}`;
     }
   }
 
+  async createTradingMetricsDraft({ metric, metricsSummary, pastPosts = [] } = {}) {
+    const idea = `Пост о результате торгового бота после действия владельца.
+Сделка:
+${JSON.stringify(metric, null, 2)}
+
+Сводка последних метрик:
+${JSON.stringify(metricsSummary, null, 2)}
+
+Сохрани approval-first: пост только в корзину, без автопубликации.`;
+    return this.createDraft({
+      diffText: `Trading metrics update\n${JSON.stringify({ metric, metricsSummary }, null, 2)}`,
+      changedFiles: ['trading-metrics'],
+      pastPosts,
+      idea,
+    });
+  }
+
   async approveDraft(pendingDraft, approvedBy) {
     return {
       ...pendingDraft,
@@ -297,7 +318,16 @@ ${extractStyleSamples(pastPosts) || 'нет'}`;
   }
 
   async publishTelegram(pendingDraft) {
-    const cfg = this.config.telegram;
+    const cfg = { ...this.config.telegram };
+    if ((!cfg.session || !cfg.channel) && pendingDraft.ownerId) {
+      const sessionConfig = await new TelegramSessionService().getSessionConfig(pendingDraft.ownerId);
+      if (sessionConfig?.session) {
+        cfg.apiId ||= sessionConfig.apiId;
+        cfg.apiHash ||= sessionConfig.apiHash;
+        cfg.session ||= sessionConfig.session;
+        cfg.channel ||= sessionConfig.preferredChannel?.handle || sessionConfig.preferredChannel?.id;
+      }
+    }
     if (!cfg.enabled) {
       return { platform: 'telegram', status: 'skipped', reason: 'disabled' };
     }

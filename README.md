@@ -66,6 +66,8 @@ AUTOPOSTING_PLATFORMS=telegram,habr,dzen
 TELEGRAM_MTPROTO_API_ID=<my.telegram.org api_id>
 TELEGRAM_MTPROTO_API_HASH=<my.telegram.org api_hash>
 TELEGRAM_MTPROTO_SESSION=<GramJS StringSession>
+TELEGRAM_MTPROTO_SESSION_FILE=data/telegram-mtproto-session.enc.json
+TELEGRAM_AUTH_MINIAPP_URL=https://<your-domain>/telegram-auth
 TELEGRAM_AUTOPOST_CHANNEL=@your_channel
 AUTOPOSTING_TELEGRAM_ENABLED=true
 AUTOPOSTING_HABR_ENABLED=true
@@ -75,9 +77,13 @@ DZEN_RSS_TITLE="Trading AI autopost drafts"
 DZEN_RSS_FEED_URL=https://example.com/dzen.xml
 DZEN_SITE_URL=https://example.com
 DZEN_RSS_OUTPUT_PATH=data/autoposting-dzen.xml
+TRADING_METRICS_FILE=data/trading-metrics.json
+TRADING_POST_BASKET_FILE=data/trading-post-basket.json
+TRADING_METRICS_AUTO_DRAFTS=true
 ```
 
 Autoposting is approval-first: the SMM agent can draft from code changes and past-post style samples, but publishing requires the owner to approve the pending draft in Telegram.
+MiniApp MTProto authorization is available at `/telegram-auth` when the Express server is running; it stores the GramJS session encrypted and auto-restores it on `/start`/autoposting menu usage. Trading order executions are recorded to metrics and create background drafts in the post basket; they still require manual approval before public Telegram publishing.
 
 4. Run the Bot
 Bash

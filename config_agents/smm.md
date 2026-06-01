@@ -16,6 +16,8 @@ Telegram/SMM-аналитик для упаковки AI-сигналов, со�
 - `social/social-content`
 - `social/social-media-analyzer`
 - `social/pulse`
+- `social/telegram-autoposting`
+- `social/post-style-preservation`
 
 ## Ограничения
 - Не отправлять сообщения в Telegram/Habr/Dzen без ручного approval владельца.

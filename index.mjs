@@ -2,6 +2,7 @@ import 'dotenv/config'; // Подключаем .env в самом начале 
 import express from 'express';
 import { webhookCallback } from 'grammy';
 import { createBot } from './src/bot.mjs';
+import { createTelegramAuthMiniAppRouter } from './src/composers/telegramAuthMiniApp.mjs';
 
 // Получаем переменные окружения
 const PORT = process.env.PORT || 3333;
@@ -17,6 +18,7 @@ const bot = createBot(TOKEN);
 const app = express();
 
 app.use(express.json());
+app.use(createTelegramAuthMiniAppRouter());
 
 // Логика запуска в зависимости от наличия WEBHOOK_URL
 if (WEBHOOK_URL) {
