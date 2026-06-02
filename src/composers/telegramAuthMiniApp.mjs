@@ -26,8 +26,6 @@ export function createTelegramAuthMiniAppRouter() {
       const telegramId = auth?.userId || req.body?.telegramId;
       const result = await service.startLogin({
         telegramId,
-        apiId: req.body?.apiId,
-        apiHash: req.body?.apiHash,
         phoneNumber: req.body?.phoneNumber,
       });
       res.json(result);

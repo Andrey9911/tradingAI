@@ -2,9 +2,9 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
-import { TelegramClient, Api } from 'telegram';
-import { StringSession } from 'telegram/sessions/index.js';
+import { Api } from 'telegram';
 import { encrypt, decrypt } from '../utils/encryption.mjs';
+import { TelegramClientManager } from './TelegramClientManager.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(__filename), '..', '..');
@@ -85,7 +85,7 @@ export function verifyTelegramWebAppInitData(initData, botToken = process.env.AP
 }
 
 export class TelegramSessionService {
-  constructor({ sessionFile = process.env.TELEGRAM_MTPROTO_SESSION_FILE || DEFAULT_SESSION_FILE } = {}) {
+  constructor({ sessionFile = process.env.TELEGRAM_MTPROTO_METADATA_FILE || DEFAULT_SESSION_FILE } = {}) {
     this.sessionFile = path.isAbsolute(sessionFile) ? sessionFile : path.join(ROOT_DIR, sessionFile);
   }
 
@@ -105,45 +105,40 @@ export class TelegramSessionService {
   }
 
   async hasSession(telegramId) {
-    const store = await this.readStore();
-    return Boolean(store.sessions?.[normalizeId(telegramId)]?.session);
+    void telegramId;
+    return TelegramClientManager.hasSessionFile();
   }
 
   async getSessionConfig(telegramId) {
     const store = await this.readStore();
     const row = store.sessions?.[normalizeId(telegramId)];
-    if (!row) return null;
+    const hasSession = await TelegramClientManager.hasSessionFile();
+    if (!row && !hasSession) return null;
     return {
       telegramId: normalizeId(telegramId),
-      apiId: row.apiId,
-      apiHash: decrypted(row.apiHash),
-      session: decrypted(row.session),
-      phoneNumber: decrypted(row.phoneNumber),
-      preferredChannel: row.preferredChannel || null,
-      channels: row.channels || [],
-      authorizedAt: row.authorizedAt,
+      apiId: Number(process.env.TELEGRAM_MTPROTO_API_ID),
+      apiHash: process.env.TELEGRAM_MTPROTO_API_HASH || '',
+      sessionFile: TelegramClientManager.sessionFilePath(),
+      phoneNumber: decrypted(row?.phoneNumber),
+      preferredChannel: row?.preferredChannel || null,
+      channels: row?.channels || [],
+      authorizedAt: row?.authorizedAt,
     };
   }
 
-  async startLogin({ telegramId, apiId, apiHash, phoneNumber }) {
+  async startLogin({ telegramId, phoneNumber }) {
     const ownerId = normalizeId(process.env.OWNER_ID);
     const userId = normalizeId(telegramId);
     if (ownerId && userId !== ownerId) throw new Error('Only OWNER_ID can authorize MTProto session.');
     if (!userId) throw new Error('ID_TELEGRAM is required.');
-    if (!apiId || !Number.isFinite(Number(apiId))) throw new Error('TELEGRAM_MTPROTO_API_ID must be numeric.');
-    if (!apiHash) throw new Error('TELEGRAM_MTPROTO_API_HASH is required.');
     if (!phoneNumber) throw new Error('Phone number is required.');
 
     const phone = normalizePhone(phoneNumber);
-    const client = new TelegramClient(new StringSession(''), Number(apiId), apiHash, { connectionRetries: 3 });
-    await client.connect();
-    try {
-      const sent = await client.sendCode({ apiId: Number(apiId), apiHash }, phone);
+    return TelegramClientManager.runAuthAction(async (client, { apiId, apiHash }) => {
+      const sent = await client.sendCode({ apiId, apiHash }, phone);
       const store = await this.readStore();
       store.pending ??= {};
       store.pending[userId] = {
-        apiId: Number(apiId),
-        apiHash: encrypted(apiHash),
         phoneNumber: encrypted(phone),
         phoneCodeHash: encrypted(sent.phoneCodeHash),
         isCodeViaApp: Boolean(sent.isCodeViaApp),
@@ -151,9 +146,7 @@ export class TelegramSessionService {
       };
       await this.writeStore(store);
       return { status: 'code_required', isCodeViaApp: Boolean(sent.isCodeViaApp) };
-    } finally {
-      await client.disconnect().catch(() => {});
-    }
+    });
   }
 
   async verifyLogin({ telegramId, code, password = '' }) {
@@ -163,14 +156,9 @@ export class TelegramSessionService {
     if (!pending) throw new Error('No pending Telegram login. Start authorization first.');
     if (!code) throw new Error('Temporary Telegram code is required.');
 
-    const apiId = Number(pending.apiId);
-    const apiHash = decrypted(pending.apiHash);
     const phoneNumber = decrypted(pending.phoneNumber);
     const phoneCodeHash = decrypted(pending.phoneCodeHash);
-    const stringSession = new StringSession('');
-    const client = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 3 });
-    await client.connect();
-    try {
+    return TelegramClientManager.runAuthAction(async (client, { apiId, apiHash }) => {
       let user;
       try {
         const result = await client.invoke(new Api.auth.SignIn({
@@ -198,12 +186,10 @@ export class TelegramSessionService {
 
       const channels = await this.findAdminedPublicChannels(client);
       const preferredChannel = pickPreferredChannel(channels);
+      await TelegramClientManager.saveSessionString(client.session.save());
       store.sessions ??= {};
       store.sessions[userId] = {
-        apiId,
-        apiHash: encrypted(apiHash),
         phoneNumber: encrypted(phoneNumber),
-        session: encrypted(client.session.save()),
         user: {
           id: String(user?.id ?? userId),
           username: user?.username || '',
@@ -221,9 +207,7 @@ export class TelegramSessionService {
         channels,
         user: store.sessions[userId].user,
       };
-    } finally {
-      await client.disconnect().catch(() => {});
-    }
+    });
   }
 
   async findAdminedPublicChannels(client) {
@@ -239,21 +223,12 @@ export class TelegramSessionService {
 
   async fetchRecentChannelPosts(telegramId, channelHandle, limit = 30) {
     const sessionConfig = await this.getSessionConfig(telegramId);
-    if (!sessionConfig?.session || !channelHandle) return [];
-    const client = new TelegramClient(
-      new StringSession(sessionConfig.session),
-      Number(sessionConfig.apiId),
-      sessionConfig.apiHash,
-      { connectionRetries: 3 },
-    );
-    await client.connect();
-    try {
+    if (!sessionConfig || !channelHandle) return [];
+    return TelegramClientManager.runAction(async (client) => {
       const messages = await client.getMessages(channelHandle, { limit: Number(limit) });
       return messages
         .map((message) => String(message?.message || '').trim())
         .filter(Boolean);
-    } finally {
-      await client.disconnect().catch(() => {});
-    }
+    });
   }
 }

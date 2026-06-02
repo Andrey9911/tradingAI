@@ -3,10 +3,9 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import RSS from 'rss';
-import { TelegramClient } from 'telegram';
-import { StringSession } from 'telegram/sessions/index.js';
 import { AIService } from './aiService.mjs';
 import { TelegramSessionService } from './telegramSessionService.mjs';
+import { TelegramClientManager } from './TelegramClientManager.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(__filename), '..', '..');
@@ -20,9 +19,6 @@ const DEFAULT_CONFIG = {
     .filter(Boolean),
   telegram: {
     enabled: String(process.env.AUTOPOSTING_TELEGRAM_ENABLED || 'true').toLowerCase() === 'true',
-    apiId: process.env.TELEGRAM_MTPROTO_API_ID || '',
-    apiHash: process.env.TELEGRAM_MTPROTO_API_HASH || '',
-    session: process.env.TELEGRAM_MTPROTO_SESSION || '',
     channel: process.env.TELEGRAM_AUTOPOST_CHANNEL || '',
   },
   habr: {
@@ -166,9 +162,14 @@ export function getAutopostingEnvTemplate() {
     OPENROUTER_API_KEY: '<already used by AIService>',
     TELEGRAM_MTPROTO_API_ID: '<my.telegram.org api_id>',
     TELEGRAM_MTPROTO_API_HASH: '<my.telegram.org api_hash>',
-    TELEGRAM_MTPROTO_SESSION: '<GramJS StringSession>',
-    TELEGRAM_MTPROTO_SESSION_FILE: 'data/telegram-mtproto-session.enc.json',
+    TELEGRAM_MTPROTO_CONNECT_DELAY_MS: '1500',
+    TELEGRAM_MTPROTO_METADATA_FILE: 'data/telegram-mtproto-session.enc.json',
     TELEGRAM_AUTOPOST_CHANNEL: '@channel_username_or_numeric_id',
+    RESEARCH_TELEGRAM_CHANNELS: '@channel_one,@channel_two',
+    RESEARCH_BACKGROUND_ENABLED: 'false',
+    RESEARCH_INTERVAL_MINUTES: '30',
+    RESEARCH_CACHE_TTL_MINUTES: '180',
+    RESEARCH_KEYWORDS: 'token,токен,airdrop,listing,pump,dex,whale,кит,ликвидность',
     AUTOPOSTING_TELEGRAM_ENABLED: 'true',
     AUTOPOSTING_HABR_ENABLED: 'true',
     HABR_PROFILE_URL: 'https://habr.com/ru/users/<username>/',
@@ -319,38 +320,29 @@ ${JSON.stringify(metricsSummary, null, 2)}
 
   async publishTelegram(pendingDraft) {
     const cfg = { ...this.config.telegram };
-    if ((!cfg.session || !cfg.channel) && pendingDraft.ownerId) {
+    if (!cfg.channel && pendingDraft.ownerId) {
       const sessionConfig = await new TelegramSessionService().getSessionConfig(pendingDraft.ownerId);
-      if (sessionConfig?.session) {
-        cfg.apiId ||= sessionConfig.apiId;
-        cfg.apiHash ||= sessionConfig.apiHash;
-        cfg.session ||= sessionConfig.session;
+      if (sessionConfig) {
         cfg.channel ||= sessionConfig.preferredChannel?.handle || sessionConfig.preferredChannel?.id;
       }
     }
     if (!cfg.enabled) {
       return { platform: 'telegram', status: 'skipped', reason: 'disabled' };
     }
-    if (!cfg.apiId || !cfg.apiHash || !cfg.session || !cfg.channel) {
+    if (!cfg.channel || !(await TelegramClientManager.hasSessionFile())) {
       return {
         platform: 'telegram',
         status: 'needs_credentials',
-        reason: 'Set TELEGRAM_MTPROTO_API_ID, TELEGRAM_MTPROTO_API_HASH, TELEGRAM_MTPROTO_SESSION, TELEGRAM_AUTOPOST_CHANNEL.',
+        reason: 'Set TELEGRAM_MTPROTO_API_ID, TELEGRAM_MTPROTO_API_HASH, session.txt, TELEGRAM_AUTOPOST_CHANNEL.',
       };
     }
 
-    const client = new TelegramClient(
-      new StringSession(cfg.session),
-      Number(cfg.apiId),
-      cfg.apiHash,
-      { connectionRetries: 3 },
-    );
-    await client.connect();
-    const result = await client.sendMessage(cfg.channel, {
-      message: pendingDraft.draft.telegramText,
-      linkPreview: false,
+    const result = await TelegramClientManager.runAction(async (client) => {
+      return client.sendMessage(cfg.channel, {
+        message: pendingDraft.draft.telegramText,
+        linkPreview: false,
+      });
     });
-    await client.disconnect();
     return {
       platform: 'telegram',
       status: 'published',

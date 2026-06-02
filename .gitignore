@@ -3,3 +3,4 @@
 /data/*.enc.json
 /data/trading-metrics.json
 /data/trading-post-basket.json
+/session.txt
