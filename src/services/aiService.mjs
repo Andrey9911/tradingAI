@@ -356,7 +356,13 @@ ${rawText.slice(0, 12000)}
    * AI-анализ Web3 discovery token после первичных фильтров ликвидности/риска.
    * @returns {Promise<{ verdict: 'BUY'|'WAIT'|'AVOID', reason: string, riskLevel: 'LOW'|'MEDIUM'|'HIGH' }>}
    */
-  async evaluateDiscoveredToken(token, onStatusUpdate = null) {
+  async evaluateDiscoveredToken(token, onStatusUpdate = null, researchContext = []) {
+    const researchText = Array.isArray(researchContext) && researchContext.length
+      ? researchContext
+        .map((item, index) => `${index + 1}. ${item.summary || item.insights || ''}\nSignals: ${(item.signals || []).join(', ')}`)
+        .join('\n\n')
+        .slice(0, 5000)
+      : 'нет свежего short-term research context';
     const prompt = `Ты профессиональный Web3-аналитик мемкоинов и новых DEX-пулов. Торговля НЕ автоматическая: нужен сигнал для ручного решения.
 
 Данные токена:
@@ -377,7 +383,10 @@ ${JSON.stringify({
   source: token.source,
 }, null, 2)}
 
-Проанализируй smart money/whale/dev-wallet признаки по доступным метрикам, rugpull-риск, ликвидность, buy/sell pressure, возраст и социальный/launch контекст по источнику.
+Свежий research context из Telegram-каналов:
+${researchText}
+
+Проанализируй smart money/whale/dev-wallet признаки по доступным метрикам, rugpull-риск, ликвидность, buy/sell pressure, возраст и социальный/launch контекст по источнику и short-term research context.
 Ответь СТРОГО одной строкой JSON без markdown: {"verdict":"BUY"|"WAIT"|"AVOID","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"кратко по-русски, 1-2 предложения"}`;
 
 
@@ -387,12 +396,10 @@ try {
     max_tokens: 220,
     temperature: 0.45,
   });
-  const text = data?.choices?.[0]?.message?.content?.trim();
-  if (text) return text.slice(0, 900);
-  const raw = data.choices[0].message.content || '';
+      const raw = data?.choices?.[0]?.message?.content?.trim() || '';
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        return { verdict: 'WAIT', riskLevel: 'MEDIUM', reason: 'ИИ не вернул структурированный ответ.' };
+        return { verdict: 'WAIT', riskLevel: 'MEDIUM', reason: raw.slice(0, 500) || 'ИИ не вернул структурированный ответ.' };
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
@@ -473,6 +480,31 @@ ${pastPosts.map((post, index) => `${index + 1}. ${String(post).slice(0, 700)}`).
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1800,
       temperature: 0.55,
+    });
+    return data?.choices?.[0]?.message?.content?.trim() || '';
+  }
+
+  async summarizeResearchPosts({ posts = [], channels = [] } = {}) {
+    const prompt = `Ты crypto research analyst для Trading AI Bot. Суммаризируй свежие посты из Telegram-каналов для short-term cache модуля анализа монет.
+
+Задача:
+- выделить важные токены/тикеры/контракты, launch/listing/airdrop/DEX/whale/rugpull insights;
+- не делать авто-торговлю и не давать приказ покупать;
+- вернуть только JSON без markdown.
+
+Формат:
+{"summary":"","signals":[],"tokens":[],"riskNotes":[]}
+
+Каналы:
+${channels.join(', ') || 'unknown'}
+
+Посты:
+${posts.map((post, index) => `${index + 1}. [${post.channel}] ${String(post.text || '').slice(0, 1200)}`).join('\n\n').slice(0, 18000)}`;
+
+    const data = await this.chatWithModelFallback({
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1200,
+      temperature: 0.35,
     });
     return data?.choices?.[0]?.message?.content?.trim() || '';
   }

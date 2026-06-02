@@ -5,6 +5,7 @@ import {
   getTokenDiscoveryFilters,
 } from '../services/tokenDiscoveryService.mjs';
 import { WalletIntelService } from '../services/walletIntelService.mjs';
+import { getRecentResearchData } from '../services/researchCacheService.mjs';
 
 export const web3DiscoveryComposer = new Composer();
 
@@ -125,10 +126,20 @@ export async function runWeb3Discovery(ctx) {
 
     await updateStatus(`✅ Top-${tokens.length} найден. Запускаю AI-анализ…`);
     const analyzed = [];
+    const researchContext = getRecentResearchData({ hours: 3, limit: 5 });
+    if (researchContext.length) {
+      await updateStatus(`📊 Подключаю short-term research context: ${researchContext.length} item(s).`);
+    }
 
     for (const token of tokens) {
       await updateStatus(`🤖 AI анализирует ${token.symbol || shortAddress(token.address)}…`);
-      const aiResult = await ai.evaluateDiscoveredToken(token, updateStatus);
+      const relevantResearch = researchContext.filter((item) => {
+        const haystack = `${item.summary || ''} ${(item.signals || []).join(' ')} ${(item.tokens || []).join(' ')}`.toLowerCase();
+        const symbol = String(token.symbol || '').toLowerCase();
+        const address = String(token.address || '').toLowerCase();
+        return !symbol && !address ? true : haystack.includes(symbol) || haystack.includes(address) || researchContext.length <= 2;
+      });
+      const aiResult = await ai.evaluateDiscoveredToken(token, updateStatus, relevantResearch.length ? relevantResearch : researchContext.slice(0, 2));
       analyzed.push({ ...token, ai: aiResult });
     }
 
@@ -138,6 +149,9 @@ export async function runWeb3Discovery(ctx) {
     const keyboard = new InlineKeyboard();
     let text = `<b>🧠 Web3 Intelligence: top-${enriched.length}</b>\n`;
     text += `<i>Источники: Pump.fun, DexScreener, GeckoTerminal. Это AI-отчёт для ручного решения, не авто-торговля.</i>\n\n`;
+    if (researchContext.length) {
+      text += `<b>Research context:</b> ${researchContext.length} fresh item(s), last ${escapeHtml(researchContext[0].createdAt)}\n\n`;
+    }
     text += `<b>Фильтры</b>: liquidityUsd &gt; ${filters.liquidityUsd}, holders &gt; ${filters.holders}, volume24h &gt; ${filters.volume24h}, ageMinutes &gt; ${filters.ageMinutes}\n\n`;
 
     enriched.forEach((token, index) => {

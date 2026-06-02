@@ -11,6 +11,9 @@ import {
 } from '../services/autopostingService.mjs';
 import { TelegramSessionService } from '../services/telegramSessionService.mjs';
 import { TradingMetricsService } from '../services/tradingMetricsService.mjs';
+import { ResearchCacheService } from '../services/researchCacheService.mjs';
+import { executeResearchPipeline } from '../services/researchPipelineService.mjs';
+import { parseResearchChannels } from '../services/telegramScraperService.mjs';
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -54,8 +57,26 @@ function buildAutopostingKeyboard(pendingDraft) {
       .text('❌ Отклонить draft', 'autoposting_reject');
   }
 
-  keyboard.row().text('◀️ Назад в меню', 'autoposting_back_main');
+  keyboard.row().text('◀️ Назад в хаб', 'autoposting_hub');
   return keyboard;
+}
+
+function buildHubKeyboard() {
+  return new InlineKeyboard()
+    .text('📊 Управление Ресерчем', 'research_manage')
+    .row()
+    .text('📝 Управление Автопостингом', 'autoposting_manage')
+    .row()
+    .text('◀️ Назад в меню', 'autoposting_back_main');
+}
+
+function buildResearchKeyboard() {
+  return new InlineKeyboard()
+    .text('🚀 Вызвать ресерч сейчас', 'research_run')
+    .row()
+    .text('📈 Статус фонового ресерча', 'research_status')
+    .row()
+    .text('◀️ Назад', 'autoposting_hub');
 }
 
 function platformStatus(config) {
@@ -69,7 +90,7 @@ function platformStatus(config) {
 
 async function storedMtprotoStatus(ctx) {
   const hasSession = await new TelegramSessionService().hasSession(ctx.from?.id);
-  return hasSession ? 'encrypted session stored' : 'needs MiniApp/MTProto auth';
+  return hasSession ? 'session.txt stored' : 'needs MiniApp/MTProto auth';
 }
 
 function authInstructions(ctx) {
@@ -77,20 +98,36 @@ function authInstructions(ctx) {
   const webAppUrl = process.env.TELEGRAM_AUTH_MINIAPP_URL || '';
   const keyboard = new InlineKeyboard();
   if (webAppUrl) keyboard.webApp('Открыть MiniApp auth', webAppUrl).row();
-  keyboard.text('Ввести API_ID/API_HASH/телефон в чате', 'autoposting_auth_chat').row()
+  keyboard.text('Ввести телефон в чате', 'autoposting_auth_chat').row()
     .text('◀️ Назад', 'autoposting_back');
   return {
     text: `<b>🔐 MTProto authorization</b>\n\n` +
-      `MiniApp/web flow принимает ID_TELEGRAM, API_ID, API_HASH и phone. ` +
+      `MiniApp/web flow принимает ID_TELEGRAM и phone. ` +
       `После отправки Telegram пришлёт временный code; бот попросит его отдельным шагом.\n\n` +
       `<b>Chat fallback format:</b>\n` +
-      `<pre>API_ID=12345\nAPI_HASH=abcdef\nPHONE=+79990000000</pre>\n` +
-      `Сессия сохраняется в encrypted file <code>data/telegram-mtproto-session.enc.json</code>.`,
+      `<pre>PHONE=+79990000000</pre>\n` +
+      `API_ID/API_HASH берутся строго из <code>.env</code>. StringSession сохраняется в <code>session.txt</code> в корне проекта.`,
     keyboard,
   };
 }
 
 export async function showAutopostingMenu(ctx) {
+  const cacheStatus = new ResearchCacheService().getStatus();
+  await ctx.reply(
+    `<b>📣 Ресерч и Автопостинг</b>\n\n` +
+      `Выберите направление:\n` +
+      `• <b>Ресерч</b> — сбор постов из Telegram-каналов, AI-суммаризация и short-term cache для анализа монет.\n` +
+      `• <b>Автопостинг</b> — старая approval-first генерация draft-постов и публикация после одобрения.\n\n` +
+      `<b>Research cache:</b> ${cacheStatus.freshItems} fresh / ${cacheStatus.cacheSize} total`,
+    {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: buildHubKeyboard(),
+    },
+  );
+}
+
+async function showAutopostingManagementMenu(ctx) {
   const state = ensureAutopostingSession(ctx);
   const config = getAutopostingConfig();
   const mtprotoStatus = await storedMtprotoStatus(ctx);
@@ -109,6 +146,26 @@ export async function showAutopostingMenu(ctx) {
     disable_web_page_preview: true,
     reply_markup: buildAutopostingKeyboard(state.pendingDraft),
   });
+}
+
+async function showResearchMenu(ctx) {
+  const channels = parseResearchChannels();
+  const status = new ResearchCacheService().getStatus();
+  await ctx.reply(
+    `<b>📊 Управление Ресерчем</b>\n\n` +
+      `<b>Каналы:</b> ${channels.length ? escapeHtml(channels.join(', ')) : 'не заданы в RESEARCH_TELEGRAM_CHANNELS'}\n` +
+      `<b>Фоновый режим:</b> ${String(process.env.RESEARCH_BACKGROUND_ENABLED || 'false')}\n` +
+      `<b>Интервал:</b> ${process.env.RESEARCH_INTERVAL_MINUTES || 30} мин\n` +
+      `<b>TTL cache:</b> ${status.ttlMinutes} мин\n` +
+      `<b>Fresh items:</b> ${status.freshItems}\n` +
+      `<b>Last success:</b> ${status.lastSuccessAt || '—'}\n` +
+      `<b>Last error:</b> ${escapeHtml(status.lastError || '—')}`,
+    {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: buildResearchKeyboard(),
+    },
+  );
 }
 
 async function collectGitDiff() {
@@ -177,6 +234,63 @@ autopostingComposer.callbackQuery('autoposting_generate', async (ctx) => {
   }
 });
 
+autopostingComposer.callbackQuery('autoposting_hub', async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  await showAutopostingMenu(ctx);
+});
+
+autopostingComposer.callbackQuery('autoposting_manage', async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  await showAutopostingManagementMenu(ctx);
+});
+
+autopostingComposer.callbackQuery('research_manage', async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  await showResearchMenu(ctx);
+});
+
+autopostingComposer.callbackQuery('research_status', async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  await showResearchMenu(ctx);
+});
+
+autopostingComposer.callbackQuery('research_run', async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  const loading = await ctx.reply('⏳ Запускаю research pipeline…');
+  const updateStatus = async (line) => {
+    await ctx.api.editMessageText(loading.chat.id, loading.message_id, escapeHtml(line), {
+      parse_mode: 'HTML',
+    }).catch(() => {});
+  };
+  try {
+    const row = await executeResearchPipeline({ onStatusUpdate: updateStatus });
+    await ctx.api.editMessageText(
+      loading.chat.id,
+      loading.message_id,
+      `<b>📊 Research готов</b>\n\n` +
+        `<b>Каналы:</b> ${escapeHtml(row.channels.join(', ') || '—')}\n` +
+        `<b>Постов:</b> ${row.usedPosts}/${row.fetchedPosts}\n` +
+        `<b>Summary:</b> ${escapeHtml(row.summary)}\n` +
+        `<b>Signals:</b> ${escapeHtml((row.signals || []).join(', ') || '—')}`,
+      {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        reply_markup: buildResearchKeyboard(),
+      },
+    );
+  } catch (err) {
+    await ctx.api.editMessageText(
+      loading.chat.id,
+      loading.message_id,
+      `❌ Research error: ${escapeHtml(err.message)}`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: buildResearchKeyboard(),
+      },
+    ).catch(() => {});
+  }
+});
+
 autopostingComposer.callbackQuery('autoposting_add_samples', async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
   const state = ensureAutopostingSession(ctx);
@@ -208,7 +322,7 @@ autopostingComposer.callbackQuery('autoposting_auth', async (ctx) => {
 autopostingComposer.callbackQuery('autoposting_auth_chat', async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
   ctx.session.autopostingStep = 'mtprotoAuth';
-  await ctx.reply('Отправьте API_ID/API_HASH/PHONE в формате:\nAPI_ID=12345\nAPI_HASH=abcdef\nPHONE=+79990000000');
+  await ctx.reply('Отправьте телефон для MTProto login. API_ID/API_HASH берутся строго из .env:\nPHONE=+79990000000');
 });
 
 autopostingComposer.callbackQuery('autoposting_basket', async (ctx) => {
@@ -264,7 +378,7 @@ autopostingComposer.callbackQuery(/^autoposting_basket_approve_(.+)$/, async (ct
 
 autopostingComposer.callbackQuery('autoposting_back', async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
-  await showAutopostingMenu(ctx);
+  await showAutopostingManagementMenu(ctx);
 });
 
 autopostingComposer.callbackQuery('autoposting_reject', async (ctx) => {
@@ -317,8 +431,6 @@ autopostingComposer.on('message:text', async (ctx, next) => {
     try {
       const result = await new TelegramSessionService().startLogin({
         telegramId: ctx.from?.id,
-        apiId: values.API_ID || values.ID_TELEGRAM || values.TELEGRAM_MTPROTO_API_ID,
-        apiHash: values.API_HASH || values.TELEGRAM_MTPROTO_API_HASH,
         phoneNumber: values.PHONE || values.PHONE_NUMBER || values.TELEGRAM_PHONE,
       });
       ctx.session.autopostingStep = 'mtprotoCode';
@@ -349,7 +461,7 @@ autopostingComposer.on('message:text', async (ctx, next) => {
       ctx.session.autopostingStep = null;
       const preferred = result.preferredChannel?.handle || 'не найден';
       await ctx.reply(
-        `✅ MTProto session сохранена encrypted.\n` +
+        `✅ MTProto session сохранена в session.txt.\n` +
           `Каналов найдено: ${result.channels.length}\n` +
           `Целевой канал: ${preferred}`,
       );

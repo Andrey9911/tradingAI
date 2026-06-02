@@ -65,10 +65,15 @@ AUTOPOSTING_ENABLED=false
 AUTOPOSTING_PLATFORMS=telegram,habr,dzen
 TELEGRAM_MTPROTO_API_ID=<my.telegram.org api_id>
 TELEGRAM_MTPROTO_API_HASH=<my.telegram.org api_hash>
-TELEGRAM_MTPROTO_SESSION=<GramJS StringSession>
-TELEGRAM_MTPROTO_SESSION_FILE=data/telegram-mtproto-session.enc.json
+TELEGRAM_MTPROTO_CONNECT_DELAY_MS=1500
+TELEGRAM_MTPROTO_METADATA_FILE=data/telegram-mtproto-session.enc.json
 TELEGRAM_AUTH_MINIAPP_URL=https://<your-domain>/telegram-auth
 TELEGRAM_AUTOPOST_CHANNEL=@your_channel
+RESEARCH_TELEGRAM_CHANNELS=@channel_one,@channel_two
+RESEARCH_BACKGROUND_ENABLED=false
+RESEARCH_INTERVAL_MINUTES=30
+RESEARCH_CACHE_TTL_MINUTES=180
+RESEARCH_KEYWORDS=token,токен,airdrop,listing,pump,dex,whale,кит,ликвидность
 AUTOPOSTING_TELEGRAM_ENABLED=true
 AUTOPOSTING_HABR_ENABLED=true
 HABR_PROFILE_URL=https://habr.com/ru/users/<username>/
@@ -83,7 +88,9 @@ TRADING_METRICS_AUTO_DRAFTS=true
 ```
 
 Autoposting is approval-first: the SMM agent can draft from code changes and past-post style samples, but publishing requires the owner to approve the pending draft in Telegram.
-MiniApp MTProto authorization is available at `/telegram-auth` when the Express server is running; it stores the GramJS session encrypted and auto-restores it on `/start`/autoposting menu usage. Trading order executions are recorded to metrics and create background drafts in the post basket; they still require manual approval before public Telegram publishing.
+MiniApp MTProto authorization is available at `/telegram-auth` when the Express server is running; it reads `TELEGRAM_MTPROTO_API_ID`/`TELEGRAM_MTPROTO_API_HASH` from `.env`, stores the GramJS `StringSession` in root `session.txt`, and all MTProto actions run through `TelegramClientManager` with connect → action → disconnect. Trading order executions are recorded to metrics and create background drafts in the post basket; they still require manual approval before public Telegram publishing.
+
+The `📣 Автопостинг` button opens the `Ресерч и Автопостинг` hub. Research mode scrapes channels from `RESEARCH_TELEGRAM_CHANNELS`, summarizes relevant token/market posts through AI, keeps only short-term TTL cache entries, and injects fresh context into `🧬 Web3 top-10` analysis.
 
 4. Run the Bot
 Bash

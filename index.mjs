@@ -3,6 +3,7 @@ import express from 'express';
 import { webhookCallback } from 'grammy';
 import { createBot } from './src/bot.mjs';
 import { createTelegramAuthMiniAppRouter } from './src/composers/telegramAuthMiniApp.mjs';
+import { startResearchWorker } from './src/services/researchPipelineService.mjs';
 
 // Получаем переменные окружения
 const PORT = process.env.PORT || 3333;
@@ -16,6 +17,9 @@ if (!TOKEN) {
 // Создаем бота и приложение
 const bot = createBot(TOKEN);
 const app = express();
+startResearchWorker({
+  onStatusUpdate: async (line) => console.log(line),
+});
 
 app.use(express.json());
 app.use(createTelegramAuthMiniAppRouter());

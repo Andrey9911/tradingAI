@@ -16,14 +16,10 @@
   </head>
   <body>
     <h2>🔐 MTProto authorization</h2>
-    <p class="muted">Сессия сохраняется в encrypted file и будет использоваться для approval-first постинга.</p>
+    <p class="muted">API_ID/API_HASH берутся из .env. StringSession сохраняется в session.txt и используется только через TelegramClientManager.</p>
     <section id="credentials">
       <label>ID_TELEGRAM</label>
       <input id="telegramId" inputmode="numeric" placeholder="Ваш Telegram user id" />
-      <label>API_ID</label>
-      <input id="apiId" inputmode="numeric" placeholder="my.telegram.org api_id" />
-      <label>API_HASH</label>
-      <input id="apiHash" placeholder="my.telegram.org api_hash" />
       <label>Phone</label>
       <input id="phoneNumber" placeholder="+79990000000" />
       <button onclick="startLogin()">Отправить временный код</button>
@@ -65,8 +61,6 @@
           setStatus('Отправляю code...');
           const data = await postJson('/api/telegram-auth/start', {
             telegramId: value('telegramId'),
-            apiId: value('apiId'),
-            apiHash: value('apiHash'),
             phoneNumber: value('phoneNumber'),
           });
           document.getElementById('verification').classList.remove('hidden');
