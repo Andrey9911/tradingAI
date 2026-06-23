@@ -13,6 +13,7 @@ function getSignalSettings(ctx) {
   if (!ctx.session) ctx.session = {};
   if (!ctx.session.signalSettings) ctx.session.signalSettings = { ...DEFAULT_SIGNAL_SETTINGS };
 
+  ctx.session.isDisableFiltr ??= true;
   // Подмешиваем значения из env, если ключей не хватает.
   ctx.session.signalSettings.sellSpreadPct ??= DEFAULT_SIGNAL_SETTINGS.sellSpreadPct;
   ctx.session.signalSettings.maxEntryChg24Pct ??= DEFAULT_SIGNAL_SETTINGS.maxEntryChg24Pct;
@@ -50,6 +51,7 @@ export async function showSettingsMenu(ctx) {
     .text(`📊 Vol: $${t.volume24h[0]}-$${t.volume24h[1]}`, 'settings_edit_token_volume24h')
     .text(`⏱ Age: ${t.ageMinutes[0]}-${t.ageMinutes[1]}m`, 'settings_edit_token_ageMinutes')
     .row()
+    .text(`Фильтры ${ctx.session.isDisableFiltr ? 'отключены' : 'включены'}`, 'settings_disable_filters')
     .text('◀️ Назад в меню', 'settings_back_main');
 
   const text = `<b>⚙️ Настройки сигналов</b>\n\n` +
@@ -67,9 +69,9 @@ export async function showSettingsMenu(ctx) {
 
 // --- Кнопки меню настроек ---
 settingsComposer.callbackQuery(/^settings_edit_token_(.+)$/, async (ctx) => {
-  await ctx.answerCallbackQuery().catch(() => {});
+  await ctx.answerCallbackQuery().catch(() => { });
   const field = ctx.match[1];
-  
+
   if (!TOKEN_FILTER_LABELS[field]) { // Если у тебя есть этот объект с названиями
     await ctx.reply('Неизвестный фильтр.');
     return;
@@ -79,10 +81,22 @@ settingsComposer.callbackQuery(/^settings_edit_token_(.+)$/, async (ctx) => {
   await ctx.reply(`Измените фильтр "${TOKEN_FILTER_LABELS[field]}".\n\nВведите диапазон <b>через дефис</b> (например: <code>100-150000</code>).`, { parse_mode: 'HTML' });
 });
 
+settingsComposer.callbackQuery('settings_disable_filters', async (ctx) => {
+  let toggleFilter = !ctx.session.isDisableFiltr;
+  if (toggleFilter) {
+    await ctx.answerCallbackQuery('Фильтры включены').catch(() => { });
+    ctx.session.isDisableFiltr = true;
+  } else {
+    await ctx.answerCallbackQuery('Фильтры отключены').catch(() => { });
+    ctx.session.isDisableFiltr = false;
+  }
+  await ctx.reply(`Фильтры ${ctx.session.isDisableFiltr ? 'отключены' : 'включены'}.`, { parse_mode: 'HTML' });
+});
+
 settingsComposer.callbackQuery('settings_back_main', async (ctx) => {
-  await ctx.answerCallbackQuery().catch(() => {});
+  await ctx.answerCallbackQuery().catch(() => { });
   const { mainMenuComposer } = await import('./mainMenu.mjs');
-  await mainMenuComposer.command('start',ctx);
+  await mainMenuComposer.command('start', ctx);
 });
 
 // --- Ввод чисел пользователем ---
@@ -118,14 +132,14 @@ settingsComposer.on('message:text', async (ctx, next) => {
 
     ctx.session.settingsStep = null;
     await ctx.reply(`✅ Диапазон успешно обновлен: <b>${min} — ${max}</b>`, { parse_mode: 'HTML' });
-    
+
     // Возвращаем меню (вызови функцию показа меню)
     return showSettingsMenu(ctx);
   }
 
   // --- ЛОГИКА ДЛЯ ПРОЦЕНТОВ (Спред и Рост) ---
   const value = parseFloat(text); // или твоя функция parseNumber(text)
-  
+
   if (!Number.isFinite(value)) {
     return ctx.reply('❌ Это не число. Введите, например: 5 или 15.5');
   }
@@ -137,7 +151,7 @@ settingsComposer.on('message:text', async (ctx, next) => {
 
   const s = getSignalSettings(ctx);
   s[step] = value; // step тут равен 'sellSpreadPct' или 'maxEntryChg24Pct'
-  
+
   ctx.session.settingsStep = null;
   await ctx.reply(`✅ Значение обновлено: <b>${value}%</b>`, { parse_mode: 'HTML' });
   return showSettingsMenu(ctx);

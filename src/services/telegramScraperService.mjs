@@ -32,14 +32,20 @@ export class TelegramScraperService {
   }
 
   async fetchLatestPosts(channelsList = this.channels, limit = 10) {
+    console.log('читаю каждый');
     const channels = Array.isArray(channelsList) ? channelsList.filter(Boolean) : parseResearchChannels(channelsList);
     if (!channels.length) return [];
-
+    console.log("каналы есть");
+    
     const posts = [];
     const errors = [];
     await TelegramClientManager.runAction(async (client) => {
+      console.log('client', client);
+      console.log('limit', limit);
+      console.log('channels', channels);
       for (const channel of channels) {
         try {
+          console.log('channel', channel);
           const messages = await client.getMessages(channel, { limit: Number(limit) || 10 });
           messages
             .map(message => ({

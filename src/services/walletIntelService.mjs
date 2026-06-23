@@ -212,6 +212,8 @@ export class WalletIntelService {
     this.tonService = tonService;
   }
 
+  //глубокий анализ отфильтрованных токенов 
+  //#1 перебор токенов для анализа
   async analyzeTopTokens(tokens, onStatusUpdate = null) {
     const analyzed = [];
     for (const token of tokens) {
@@ -219,9 +221,11 @@ export class WalletIntelService {
       const walletIntel = await this.analyzeToken(token, onStatusUpdate);
       analyzed.push({ ...token, walletIntel });
     }
+    console.log(analyzed);
+
     return analyzed;
   }
-
+  //#2 анализ конкретного токена
   async analyzeToken(token, onStatusUpdate = null) {
     const chain = String(token.chain || '').toLowerCase().trim();
     try {
@@ -253,6 +257,7 @@ export class WalletIntelService {
     };
   }
 
+  //Анализ solana токенов
   async analyzeSolanaToken(token, onStatusUpdate = null) {
     const mint = token.address;
     if (!mint) return fallbackIntel('token mint address missing');
@@ -285,6 +290,7 @@ export class WalletIntelService {
       holderWallets.push({ ...row, ...walletIntel, wallet: owner });
     }
 
+    //классификация
     const behavior = classifyTokenBehavior(token);
     const highSupplyWallets = holderWallets.filter(wallet => wallet.pct >= HIGH_SUPPLY_SHARE);
     const devWallet = firstString(token.devWallet, holderWallets[0]?.wallet);
@@ -448,7 +454,7 @@ export class WalletIntelService {
           previousTokens: rows.length,
           previousRugpulls: rows.filter(row => this.looksRugpulled(row)).length,
         };
-      } catch {}
+      } catch { }
     }
     return { previousTokens: 0, previousRugpulls: 0 };
   }

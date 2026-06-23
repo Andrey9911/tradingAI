@@ -110,15 +110,15 @@ export async function runWeb3Discovery(ctx) {
   };
 
   try {
-    const tokens = await discovery.discoverTopTokens(filters, updateStatus);
+    const tokens = await discovery.discoverTopTokens(filters, updateStatus, ctx.session.isDisableFiltr);
     if (!tokens.length) {
-      await ctx.api.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
+      await ctx.api.deleteMessage(loading.chat.id, loading.message_id).catch(() => { });
       await ctx.reply(
         `<b>🧠 Web3 Intelligence</b>\n\nНет токенов после фильтров:\n` +
-          `• liquidityUsd &gt; ${filters.liquidityUsd}\n` +
-          `• holders &gt; ${filters.holders}\n` +
-          `• volume24h &gt; ${filters.volume24h}\n` +
-          `• ageMinutes &gt; ${filters.ageMinutes}`,
+        `• liquidityUsd &gt; ${filters.liquidityUsd}\n` +
+        `• holders &gt; ${filters.holders}\n` +
+        `• volume24h &gt; ${filters.volume24h}\n` +
+        `• ageMinutes &gt; ${filters.ageMinutes}`,
         { parse_mode: 'HTML' },
       );
       return;
@@ -140,6 +140,8 @@ export async function runWeb3Discovery(ctx) {
         return !symbol && !address ? true : haystack.includes(symbol) || haystack.includes(address) || researchContext.length <= 2;
       });
       const aiResult = await ai.evaluateDiscoveredToken(token, updateStatus, relevantResearch.length ? relevantResearch : researchContext.slice(0, 2));
+      console.log(aiResult);
+
       analyzed.push({ ...token, ai: aiResult });
     }
 
@@ -177,7 +179,7 @@ export async function runWeb3Discovery(ctx) {
     });
   } catch (err) {
     console.error('runWeb3Discovery', err);
-    await ctx.api.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
+    await ctx.api.deleteMessage(loading.chat.id, loading.message_id).catch(() => { });
     await ctx.reply(`❌ Ошибка Web3 discovery: ${escapeHtml(err.message)}`, {
       parse_mode: 'HTML',
     });
@@ -185,6 +187,6 @@ export async function runWeb3Discovery(ctx) {
 }
 
 web3DiscoveryComposer.callbackQuery('web3_refresh', async (ctx) => {
-  await ctx.answerCallbackQuery().catch(() => {});
+  await ctx.answerCallbackQuery().catch(() => { });
   await runWeb3Discovery(ctx);
 });

@@ -17,7 +17,7 @@ const SUSPICIOUS_TOKEN_FLAGS = [
 ];
 
 const DEXSCREENER_SEARCH_QUERIES = ['pump', 'solana', 'meme', 'raydium', 'bonk', 'trump'];
-const GECKOTERMINAL_NETWORKS = ['solana', 'base', 'bsc', 'arbitrum', 'ton'];
+const GECKOTERMINAL_NETWORKS = ['solana', 'bsc', 'ton'];
 
 const BLUE_CHIP_SYMBOLS = new Set([
   'BTC',
@@ -74,8 +74,8 @@ function normalizeChain(chain) {
   const value = String(chain || '').toLowerCase();
   if (value === 'ethereum') return 'eth';
   if (value === 'binance-smart-chain') return 'bsc';
-  if(value === 'solana') return 'sol';
-  if(value  === 'ton' || value === 'the open network') return 'ton';
+  if (value === 'solana') return 'sol';
+  if (value === 'ton' || value === 'the open network') return 'ton';
   return value;
 }
 
@@ -109,7 +109,9 @@ function hasRiskFlags(token) {
 }
 
 /** Применяет фильтры по ликвидности, холдерам, объему и возрасту к списку токенов. */
-function applyFilters(tokens, filters) {
+function applyFilters(tokens, filters, isDisableFiltr) {
+  //если фильтры отключены
+  if (isDisableFiltr) return tokens
   return tokens.filter(token => {
     // 1. Стандартные проверки (оставляем как было)
     if (BLUE_CHIP_SYMBOLS.has(String(token.symbol || '').toUpperCase())) return false;
@@ -246,6 +248,7 @@ export function getTokenDiscoveryFilters(ctx) {
     ctx.session.tokenDiscoveryFilters = { ...DEFAULT_DISCOVERY_FILTERS };
   }
 
+
   ctx.session.tokenDiscoveryFilters.liquidityUsd ??= DEFAULT_DISCOVERY_FILTERS.liquidityUsd;
   ctx.session.tokenDiscoveryFilters.holders ??= DEFAULT_DISCOVERY_FILTERS.holders;
   ctx.session.tokenDiscoveryFilters.volume24h ??= DEFAULT_DISCOVERY_FILTERS.volume24h;
@@ -260,18 +263,24 @@ export class TokenDiscoveryService {
   }
 
   /** Агрегирует, фильтрует и сортирует топ токенов из всех доступных DEX-источников. */
-  async discoverTopTokens(filters = DEFAULT_DISCOVERY_FILTERS, onStatusUpdate = null) {
+  async discoverTopTokens(filters = DEFAULT_DISCOVERY_FILTERS, onStatusUpdate = null, isDisableFiltr) {
     const [pumpTokens, dexTokens, geckoTokens] = await Promise.all([
-      this.fetchPumpFunTokens(onStatusUpdate),
       this.fetchDexScreenerTokens(onStatusUpdate),
+      this.fetchPumpFunTokens(onStatusUpdate),
       this.fetchGeckoTerminalTokens(onStatusUpdate),
     ]);
-  
+
     const merged = uniqBy(
       [...pumpTokens, ...dexTokens, ...geckoTokens],
       token => `${token.chain}:${token.address || token.pairAddress}`.toLowerCase(),
     );
-  
+
+    if (isDisableFiltr) {
+      return merged
+        .map(token => ({ ...token, score: scoreToken(token) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10);
+    }
     // Передаем токены и новые фильтры-диапазоны
     return applyFilters(merged, filters)
       .map(token => ({ ...token, score: scoreToken(token) }))
@@ -282,8 +291,8 @@ export class TokenDiscoveryService {
   /** Получает и нормализует список свежих токенов с Pump.fun. */
   async fetchPumpFunTokens(onStatusUpdate = null) {
     const urls = [
-      'https://frontend-api-v3.pump.fun/coins?offset=0&limit=50&sort=created_timestamp&order=DESC&includeNsfw=false',
-      'https://frontend-api.pump.fun/coins?offset=0&limit=50&sort=created_timestamp&order=DESC&includeNsfw=false',
+      'https://frontend-api-v3.pump.fun/coins?offset=0&limit=10&sort=created_timestamp&order=DESC&includeNsfw=false',
+      'https://frontend-api.pump.fun/coins?offset=0&limit=10&sort=created_timestamp&order=DESC&includeNsfw=false',
     ];
 
     for (const url of urls) {
@@ -293,6 +302,8 @@ export class TokenDiscoveryService {
         return rows.map(normalizePumpToken).filter(token => token.address || token.pairAddress);
       } catch (err) {
         if (onStatusUpdate) await onStatusUpdate(`⚠️ Pump.fun недоступен: ${err.message}`);
+        console.log(err.message);
+        
       }
     }
 
@@ -305,6 +316,8 @@ export class TokenDiscoveryService {
     await Promise.all(DEXSCREENER_SEARCH_QUERIES.map(async query => {
       try {
         const data = await fetchJson(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`, this.timeoutMs);
+        console.log(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`);
+        
         const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
         results.push(...pairs.map(pair => normalizeDexScreenerPair(pair)));
       } catch (err) {

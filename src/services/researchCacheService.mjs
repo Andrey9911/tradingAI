@@ -1,3 +1,5 @@
+import { createClient } from '@supabase/supabase-js';
+
 const DEFAULT_TTL_MINUTES = Number(process.env.RESEARCH_CACHE_TTL_MINUTES || 180);
 const cacheRows = [];
 const status = {
@@ -27,6 +29,7 @@ export class ResearchCacheService {
     }
   }
 
+  //Запись в кэш
   storeResearchData(payload, { ttlMs = ttlMsFromEnv() } = {}) {
     this.prune();
     const row = {
@@ -61,6 +64,44 @@ export class ResearchCacheService {
   setStatus(patch) {
     Object.assign(status, patch);
     return this.getStatus();
+  }
+
+  /**
+   * Синхронизирует список каналов из БД.
+   * @returns {Promise<Array<Object>>} Массив каналов.
+   */
+  async syncChannels() {
+    if (!this.supabase) {
+      this.supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY);
+    }
+    const { data, error } = await this.supabase
+      .from('crypto_channels')
+      .select('channel_name, channel_link');
+
+    if (error) {
+      console.error('Ошибка синхронизации каналов:', error.message);
+      throw error;
+    }
+
+    this.setStatus({ lastChannels: (data || []).map(c => c.name) });
+    return data || [];
+  }
+
+  async addChannel(name, url) {
+    if (!this.supabase) {
+      this.supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY);
+    }
+    const { data, error } = await this.supabase
+      .from('crypto_channels')
+      .insert([{ 
+        channel_name: name, // маппим твою переменную name на колонку channel_name
+        channel_link: url   // маппим твою переменную url на колонку channel_link
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   }
 }
 

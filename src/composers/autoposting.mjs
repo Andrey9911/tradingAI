@@ -12,8 +12,10 @@ import {
 import { TelegramSessionService } from '../services/telegramSessionService.mjs';
 import { TradingMetricsService } from '../services/tradingMetricsService.mjs';
 import { ResearchCacheService } from '../services/researchCacheService.mjs';
-import { executeResearchPipeline } from '../services/researchPipelineService.mjs';
+import { executeResearchPipeline, fetchCryptoNewsForAutoposting } from '../services/researchPipelineService.mjs';
 import { parseResearchChannels } from '../services/telegramScraperService.mjs';
+import { AIService } from '../services/aiService.mjs';
+
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -41,6 +43,10 @@ function escapeHtml(value) {
 function buildAutopostingKeyboard(pendingDraft) {
   const keyboard = new InlineKeyboard()
     .text('🧠 Собрать draft из push/code', 'autoposting_generate')
+    .row()
+    .text('Собрать пост: Крипто-новости', 'buildPostCrypto_news')
+    .row()
+    .text('Собрать пост: Разработка', 'buildPostDev')
     .row()
     .text('🧺 Корзина постов', 'autoposting_basket')
     .row()
@@ -70,11 +76,14 @@ function buildHubKeyboard() {
     .text('◀️ Назад в меню', 'autoposting_back_main');
 }
 
+//
 function buildResearchKeyboard() {
   return new InlineKeyboard()
     .text('🚀 Вызвать ресерч сейчас', 'research_run')
     .row()
     .text('📈 Статус фонового ресерча', 'research_status')
+    .row()
+    .text('➕ Добавить канал', 'research_add_channel')
     .row()
     .text('◀️ Назад', 'autoposting_hub');
 }
@@ -234,6 +243,40 @@ autopostingComposer.callbackQuery('autoposting_generate', async (ctx) => {
   }
 });
 
+autopostingComposer.callbackQuery('buildPostCrypto_news', async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  const loading = await ctx.reply('⏳ Собираю пост по крипто-новостям...');
+  try {
+    const news = await fetchCryptoNewsForAutoposting();
+    if (!news || news.length === 0) {
+      await ctx.api.editMessageText(loading.chat.id, loading.message_id, '❌ Нет новостей за последние 2 дня.');
+      return;
+    }
+    
+    const aiService = new AIService();
+    const generatedPost = await aiService.generateCryptoNewsPost(news);
+    
+    await ctx.api.editMessageText(
+      loading.chat.id,
+      loading.message_id,
+      `<b>Сгенерированный пост (Крипто-новости):</b>\n\n${escapeHtml(generatedPost.content)}\n\n${escapeHtml(generatedPost.soft_shill)}`,
+      { parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    await ctx.api.editMessageText(
+      loading.chat.id,
+      loading.message_id,
+      `❌ Ошибка генерации: ${escapeHtml(err.message)}`,
+      { parse_mode: 'HTML' }
+    );
+  }
+});
+
+autopostingComposer.callbackQuery('buildPostDev', async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  await ctx.reply('В разработке (Собрать пост: Разработка)');
+});
+
 autopostingComposer.callbackQuery('autoposting_hub', async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
   await showAutopostingMenu(ctx);
@@ -256,14 +299,30 @@ autopostingComposer.callbackQuery('research_status', async (ctx) => {
 
 autopostingComposer.callbackQuery('research_run', async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
-  const loading = await ctx.reply('⏳ Запускаю research pipeline…');
+  const loading = await ctx.reply('⏳ Синхронизирую каналы и запускаю research pipeline…');
   const updateStatus = async (line) => {
     await ctx.api.editMessageText(loading.chat.id, loading.message_id, escapeHtml(line), {
       parse_mode: 'HTML',
     }).catch(() => {});
   };
   try {
-    const row = await executeResearchPipeline({ onStatusUpdate: updateStatus });
+    const cacheService = new ResearchCacheService();
+    await updateStatus('⏳ Синхронизация каналов из БД...');
+    const channelsCache = await cacheService.syncChannels();
+    
+    if (!channelsCache.length) {
+      throw new Error("Список каналов для парсинга в БД пуст.");
+    }
+
+    const channelNames = channelsCache.map(c => c.channel_name);
+
+    const row = await executeResearchPipeline({ 
+      channelsList: channelNames,
+      channelsCache: channelsCache,
+      limit: 10,
+      onStatusUpdate: updateStatus 
+    });
+
     await ctx.api.editMessageText(
       loading.chat.id,
       loading.message_id,
@@ -289,6 +348,17 @@ autopostingComposer.callbackQuery('research_run', async (ctx) => {
       },
     ).catch(() => {});
   }
+});
+
+// Добавление канала в research
+autopostingComposer.callbackQuery('research_add_channel', async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  const state = ensureAutopostingSession(ctx);
+  ctx.session.autopostingStep = 'researchAddChannel';
+  await ctx.reply(
+    `<b>Добавление канала</b>\nОтправьте название (или @username) и ссылку на канал через пробел или на новых строках.\nПример:\n<code>durov https://t.me/durov</code>`,
+    { parse_mode: 'HTML' }
+  );
 });
 
 autopostingComposer.callbackQuery('autoposting_add_samples', async (ctx) => {
@@ -425,7 +495,29 @@ function parseKeyValueText(text) {
     .map((match) => [match[1].toUpperCase(), match[2].trim()]));
 }
 
+// Добавление канала в research
 autopostingComposer.on('message:text', async (ctx, next) => {
+  if (ctx.session?.autopostingStep === 'researchAddChannel') {
+    const text = ctx.message.text.trim();
+    const parts = text.split(/[\s\n]+/).filter(Boolean);
+    if (parts.length < 2) {
+      await ctx.reply('❌ Ошибка: отправьте название и ссылку. Пример:\ndurov https://t.me/durov');
+      return;
+    }
+    const [name, url] = parts;
+    try {
+      const cacheService = new ResearchCacheService();
+      await cacheService.addChannel(name, url);
+      ctx.session.autopostingStep = null;
+      await ctx.reply(`✅ Канал <b>${escapeHtml(name)}</b> успешно добавлен и сохранен в БД.`, {
+        parse_mode: 'HTML',
+        reply_markup: buildResearchKeyboard(),
+      });
+    } catch (err) {
+      await ctx.reply(`❌ Ошибка добавления: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+    }
+    return;
+  }
   if (ctx.session?.autopostingStep === 'mtprotoAuth') {
     const values = parseKeyValueText(ctx.message.text);
     try {

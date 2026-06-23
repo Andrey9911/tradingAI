@@ -5,12 +5,13 @@ import { z } from 'zod';
  * Переопределение: OPENROUTER_FREE_MODELS="model/a:free,model/b:free"
  */
 export const OPENROUTER_FREE_MODELS = [
+  'openrouter/free',
   'stepfun/step-3.5-flash:free',
   'nvidia/nemotron-3-nano-30b-a3b:free',
-  'google/gemma-2-9b-it:free',
+  'google/gemma-4-31b-it:free',
   'meta-llama/llama-3.2-3b-instruct:free',
   'qwen/qwen3-next-80b-a3b-instruct:free',
-  'arcee-ai/trinity-large-preview:free',
+  'cohere/north-mini-code:free'
 ];
 
 const ROTATE_STATUSES = new Set([408, 429, 502, 503, 504]);
@@ -73,9 +74,10 @@ const aiResponseSchema = z.object({
 
 export class AIService {
   constructor() {
-    this.apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
-    this.apiKey = process.env.OPENROUTER_API_KEY;
-    this.models = parseModelsFromEnv() ?? [...OPENROUTER_FREE_MODELS];
+    this.apiUrl = process.env.FIREWORKAI_URL; // 'https://openrouter.ai/api/v1/chat/completions';
+    this.apiKey = process.env.FIREWORKAI_KEY; // process.env.OPENROUTER_API_KEY;
+    this.models = ['accounts/fireworks/models/glm-5p2']; // parseModelsFromEnv() ?? [...OPENROUTER_FREE_MODELS];
+    this.generatedPostsCache = {}; // In-Memory Cache для сгенерированных постов
   }
 
   /**
@@ -83,7 +85,7 @@ export class AIService {
    * @param {{ messages: Array, max_tokens?: number, temperature?: number }} opts
    * @returns {Promise<{ choices?: unknown[], error?: unknown }>}
    */
-  async chatWithModelFallback(opts,onStatusUpdate) {
+  async chatWithModelFallback(opts, onStatusUpdate) {
     const { messages, max_tokens = 512, temperature = 0.7 } = opts;
     let lastErr = null;
 
@@ -101,6 +103,7 @@ export class AIService {
             messages,
             max_tokens,
             temperature,
+            ...(opts.response_format ? { response_format: opts.response_format } : {})
           }),
         });
 
@@ -120,7 +123,7 @@ export class AIService {
             if (onStatusUpdate) {
               await onStatusUpdate(`⚠️ [OpenRouter] ${model} → ${response.status}, следующая модель...`);
             }
-            continue; 
+            continue;
           }
           lastErr = new Error(
             data?.error?.message || `HTTP ${response.status}`,
@@ -240,11 +243,11 @@ ${buyText}
   }
 
   /** Оценивает точку входа с помощью ИИ на основе метрик объема, RSI, Funding и Open Interest. */
-  async evaluateEntrySignal(metrics,onStatusUpdate = null) {
+  async evaluateEntrySignal(metrics, onStatusUpdate = null) {
     const closesStr = metrics.closes?.length
       ? metrics.closes.map(c => c.toFixed(8)).join(',')
       : 'нет';
-      
+
     // Форматируем новые метрики для промпта
     const oiChange = metrics.oiChangePct != null ? `${metrics.oiChangePct > 0 ? '+' : ''}${metrics.oiChangePct.toFixed(2)}% (за 1ч)` : 'н/д (нет фьючерсов)';
     const fundRate = metrics.fundingRate != null ? `${metrics.fundingRate.toFixed(4)}%` : 'н/д';
@@ -275,13 +278,13 @@ RSI(14) по закрытиям 1h: ${metrics.rsi14 != null ? metrics.rsi14.toFi
 На основе метрик выше, дай финальный вердикт. 
 Ответь СТРОГО одной строкой JSON без markdown: {"verdict":"BUY"|"WAIT"|"AVOID","reason":"кратко по-русски, укажи влияние OI/Funding"}`;
 
-      try {
-        const data = await this.chatWithModelFallback({
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 1000,
-          temperature: 0.35,
-        }, onStatusUpdate); // <-- Передаем колбэк дальше
-      
+    try {
+      const data = await this.chatWithModelFallback({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 1000,
+        temperature: 0.35,
+      }, onStatusUpdate); // <-- Передаем колбэк дальше
+
       const raw = data.choices[0].message.content || '';
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
@@ -350,21 +353,21 @@ ${rawText.slice(0, 12000)}
 
 Данные токена:
 ${JSON.stringify({
-  chain: token.chain,
-  address: token.address,
-  symbol: token.symbol,
-  price: token.price,
-  marketCap: token.marketCap,
-  liquidityUsd: token.liquidityUsd,
-  volume24h: token.volume24h,
-  buys24h: token.buys24h,
-  sells24h: token.sells24h,
-  holders: token.holders,
-  ageMinutes: token.ageMinutes,
-  dex: token.dex,
-  pairAddress: token.pairAddress,
-  source: token.source,
-}, null, 2)}
+      chain: token.chain,
+      address: token.address,
+      symbol: token.symbol,
+      price: token.price,
+      marketCap: token.marketCap,
+      liquidityUsd: token.liquidityUsd,
+      volume24h: token.volume24h,
+      buys24h: token.buys24h,
+      sells24h: token.sells24h,
+      holders: token.holders,
+      ageMinutes: token.ageMinutes,
+      dex: token.dex,
+      pairAddress: token.pairAddress,
+      source: token.source,
+    }, null, 2)}
 
 Свежий research context из Telegram-каналов:
 ${researchText}
@@ -373,12 +376,12 @@ ${researchText}
 Ответь СТРОГО одной строкой JSON без markdown: {"verdict":"BUY"|"WAIT"|"AVOID","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"кратко по-русски, 1-2 предложения"}`;
 
 
-try {
-  const data = await this.chatWithModelFallback({
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: 220,
-    temperature: 0.45,
-  });
+    try {
+      const data = await this.chatWithModelFallback({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 22000,
+        temperature: 0.45,
+      });
       const raw = data?.choices?.[0]?.message?.content?.trim() || '';
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
@@ -511,12 +514,14 @@ ${JSON.stringify(transactions).slice(0, 15000)}
         max_tokens: 300,
         temperature: 0.3,
       }, onStatusUpdate);
-      
+
       const raw = data?.choices?.[0]?.message?.content?.trim() || '';
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         return { pattern: 'Unknown', riskLevel: 'MEDIUM', reason: 'Не удалось разобрать ответ ИИ.' };
       }
+      console.log(jsonMatch);
+
       return JSON.parse(jsonMatch[0]);
     } catch (err) {
       console.error('analyzeRawTransactions error:', err);
@@ -524,4 +529,55 @@ ${JSON.stringify(transactions).slice(0, 15000)}
     }
   }
 
+  /** Блок AI: Анализ новостей и формирование поста с shill интеграцией */
+  async generateCryptoNewsPost(newsArray) {
+    const prompt = `Ты — девушка Катя - криптоаналитик и автор инсайдерского Telegram-канала.
+Твоя задача: проанализировать переданные новости и написать короткий, интригующий и цепляющий пост.
+
+Правила стиля для поста:
+1. Краткость и динамика: Пиши емко, без воды. Используй короткие абзацы (1-3 предложения).
+2. Интрига: Зацепи внимание с первого предложения. Делай неочевидные выводы из новостей, заставляя читателя задуматься.
+3. Эмодзи: Органично используй релевантные эмодзи (например: 📊, 🐳, ⚠️, 🚀, 💡), но не превращай текст в новогоднюю елку (максимум 3-5 штук на пост).
+4. Тон: Уверенный, аналитический, "я знаю больше, чем толпа".
+
+Интеграция (Soft Shill):
+Сформируй отдельный текст для нативной, "холодной" интеграции нашего закрытого продукта.
+Контекст продукта: Проект \`tradingAI\` — приватный многофункциональный Telegram-бот для автоматизации трейдинга (Bybit, TON), парсинга каналов и обработки сигналов с помощью ИИ.
+Как интегрировать: Не продавай в лоб. Упомяни бота вскользь. Например, намекни, что пока толпа читает новости, твой скрипт уже отторговал этот тренд, или что бот еще ночью прислал алерт по этой ситуации.
+
+Новости для анализа:
+${JSON.stringify(newsArray, null, 2)}
+
+Верни ответ СТРОГО в JSON формате. Схема JSON:
+{
+  "post_date": "YYYY-MM-DD",
+  "content": "Основной текст поста (интригующая выжимка с эмодзи)",
+  "soft_shill": "Текст холодной интеграции (1-2 предложения, органично продолжающие мысль поста)"
+}`;
+
+    const data = await this.chatWithModelFallback({
+      messages: [{ role: 'system', content: prompt }],
+      max_tokens: 3000,
+      temperature: 0.7,
+      response_format: { type: 'json_object' }
+    });
+
+    const raw = data?.choices?.[0]?.message?.content?.trim() || '';
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('ИИ не вернул структурированный JSON ответ.');
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    // Сохраняем во временное хранилище (In-Memory Cache)
+    const dateKey = parsed.post_date || new Date().toISOString().split('T')[0];
+    this.generatedPostsCache[dateKey] = {
+      date: dateKey,
+      text: parsed.content + '\n\n' + parsed.soft_shill
+    };
+
+    return parsed;
+  }
 }
+
