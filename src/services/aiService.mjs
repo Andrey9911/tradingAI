@@ -161,9 +161,7 @@ export class AIService {
     throw lastErr ?? new Error('OpenRouter: все бесплатные модели недоступны');
   }
 
-  /**
-   * Получить совет по лимитному ордеру
-   */
+  /** Получает совет от ИИ по выставленному лимитному ордеру на основе текущих метрик. */
   async getOrderAdvice(metrics) {
     const prompt = `Ты опытный трейдер. Оцени ситуацию:
 Монета: ${metrics.symbol}
@@ -188,11 +186,7 @@ export class AIService {
     }
   }
 
-  /**
-   * @param {Array<{coin: string, spread: number, lastBuyPrice: number, currentPrice: number, usdValue?: number, change24h?: number}>} sellCandidates
-   * @param {typeof sellCandidates} buyCandidates
-   * @param {{ sellPct: number, buyPct: number }} thresholds
-   */
+  /** Формирует совет от ИИ по управлению портфелем (фиксация прибыли или усреднение позиций). */
   async getPortfolioAdvice(sellCandidates, buyCandidates, thresholds = {}) {
     const sellPct = thresholds.sellPct ?? 5;
     const buyPct = thresholds.buyPct ?? 10;
@@ -245,10 +239,7 @@ ${buyText}
     }
   }
 
-  /**
-   * Оценка точки входа по метрикам и ряду цен (1h).
-   * @returns {Promise<{ verdict: 'BUY'|'WAIT'|'AVOID', reason: string }>}
-   */
+  /** Оценивает точку входа с помощью ИИ на основе метрик объема, RSI, Funding и Open Interest. */
   async evaluateEntrySignal(metrics,onStatusUpdate = null) {
     const closesStr = metrics.closes?.length
       ? metrics.closes.map(c => c.toFixed(8)).join(',')
@@ -309,11 +300,7 @@ RSI(14) по закрытиям 1h: ${metrics.rsi14 != null ? metrics.rsi14.toFi
     }
   }
 
-  /**
-<<<<<<< HEAD
-   * Парсинг текста поста в структурированный JSON сигнала (только извлечение полей).
-   * @param {string} rawText
-   */
+  /** Извлекает структурированный JSON торгового сигнала из сырого текста поста Telegram. */
   async parseTelegramSignalPost(rawText) {
     const prompt = `Ты парсер торговых сигналов из Telegram. Извлеки данные из текста поста.
 Твой формат ответа:
@@ -351,11 +338,7 @@ ${rawText.slice(0, 12000)}
   }
 
 
-  /**
-<<<<<<< HEAD
-   * AI-анализ Web3 discovery token после первичных фильтров ликвидности/риска.
-   * @returns {Promise<{ verdict: 'BUY'|'WAIT'|'AVOID', reason: string, riskLevel: 'LOW'|'MEDIUM'|'HIGH' }>}
-   */
+  /** Анализирует метрики найденного токена с помощью ИИ для вынесения итогового вердикта (BUY/WAIT/AVOID). */
   async evaluateDiscoveredToken(token, onStatusUpdate = null, researchContext = []) {
     const researchText = Array.isArray(researchContext) && researchContext.length
       ? researchContext
@@ -418,9 +401,7 @@ try {
 
 
 
-  /**
-   * Краткое объяснение на русском (не менять вердикт — он уже вычислен правилами).
-   */
+  /** Формирует краткое текстовое объяснение для уже рассчитанного детерминированного торгового сигнала. */
   async explainSignalAnalysisNarrative(ctx) {
     const prompt = `Ты крипто-аналитик. Вердикт и оценка уже рассчитаны детерминированно — их НЕЛЬЗЯ менять, только объясни почему так может выглядеть рынок.
 
@@ -450,6 +431,7 @@ SL в сигнале: ${ctx.hasSl ? 'да' : 'нет'}
     return 'Краткий вывод сформирован по метрикам; нейросеть не смогла добавить пояснение.';
   }
 
+  /** Генерирует черновик поста для автопостинга в Telegram и другие платформы на основе diff-изменений. */
   async createAutopostingDraft(context) {
     const { diffSummary, diffText, pastPosts = [], idea = '' } = context;
     const prompt = `Ты SMM-агент Trading AI. Подготовь автопостинг draft по изменениям в коде, но НЕ публикуй его.
@@ -484,6 +466,7 @@ ${pastPosts.map((post, index) => `${index + 1}. ${String(post).slice(0, 700)}`).
     return data?.choices?.[0]?.message?.content?.trim() || '';
   }
 
+  /** Суммаризирует свежие посты из Telegram-каналов, извлекая важные инсайты по токенам и рискам. */
   async summarizeResearchPosts({ posts = [], channels = [] } = {}) {
     const prompt = `Ты crypto research analyst для Trading AI Bot. Суммаризируй свежие посты из Telegram-каналов для short-term cache модуля анализа монет.
 
@@ -507,6 +490,38 @@ ${posts.map((post, index) => `${index + 1}. [${post.channel}] ${String(post.text
       temperature: 0.35,
     });
     return data?.choices?.[0]?.message?.content?.trim() || '';
+  }
+
+  /** Анализирует сырые данные транзакций для выявления паттернов манипуляции, аккумуляции или распределения китами. */
+  async analyzeRawTransactions(transactions, tokenContext = {}, onStatusUpdate = null) {
+    const prompt = `Ты On-chain аналитик. Проанализируй список сырых транзакций токена.
+Контекст токена: ${JSON.stringify(tokenContext)}
+
+Транзакции:
+${JSON.stringify(transactions).slice(0, 15000)}
+
+Твоя задача: определить доминирующий паттерн ("Rug Pull", "Whale Accumulation", "Retail FOMO", "Distribution", "Balanced") и оценить риск.
+Учти перетоки средств, снайперов и кошельки создателей.
+Ответь СТРОГО одной строкой JSON без markdown: {"pattern":"ПАТТЕРН","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"кратко по-русски"}`;
+
+    try {
+      if (onStatusUpdate) await onStatusUpdate('🤖 AI: Анализирую сырые on-chain транзакции...');
+      const data = await this.chatWithModelFallback({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 300,
+        temperature: 0.3,
+      }, onStatusUpdate);
+      
+      const raw = data?.choices?.[0]?.message?.content?.trim() || '';
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return { pattern: 'Unknown', riskLevel: 'MEDIUM', reason: 'Не удалось разобрать ответ ИИ.' };
+      }
+      return JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      console.error('analyzeRawTransactions error:', err);
+      return { pattern: 'Error', riskLevel: 'HIGH', reason: 'Ошибка анализа транзакций нейросетью.' };
+    }
   }
 
 }

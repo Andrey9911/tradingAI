@@ -1,4 +1,5 @@
 import { TonService } from './tonService.mjs';
+import { AIService } from './aiService.mjs';
 
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.WALLET_INTEL_TIMEOUT_MS || '8000', 10);
 const DEFAULT_SOLANA_RPC_URL = `${process.env.SOLANA_RPC_URL}?api-key=${process.env.SOLANA_RPC_KEY}` || 'https://api.mainnet-beta.solana.com';
@@ -312,6 +313,19 @@ export class WalletIntelService {
       behavior,
     });
 
+    let aiPattern = null;
+    try {
+      if (devWallet || highSupplyWallets.length > 0) {
+        const targetWallet = devWallet || highSupplyWallets[0].wallet;
+        const recentSigs = await this.getSignatures(targetWallet, 5);
+        const rawTxns = await Promise.all(recentSigs.map(sig => this.getParsedTransaction(sig.signature)));
+        const aiSvc = new AIService();
+        aiPattern = await aiSvc.analyzeRawTransactions(rawTxns, { symbol: token.symbol, address: token.address, targetWallet }, onStatusUpdate);
+      }
+    } catch (err) {
+      console.error('AI Raw Txn error:', err.message);
+    }
+
     return {
       walletAgeDays,
       firstFundingSource: firstFundingSource === 'unknown' ? 'unknown' : shortAddress(firstFundingSource),
@@ -336,6 +350,7 @@ export class WalletIntelService {
         sniperBehavior,
         transferPattern,
       }),
+      aiPattern,
     };
   }
 

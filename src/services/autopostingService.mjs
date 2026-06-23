@@ -6,8 +6,12 @@ import RSS from 'rss';
 import { AIService } from './aiService.mjs';
 import { TelegramSessionService } from './telegramSessionService.mjs';
 import { TelegramClientManager } from './TelegramClientManager.mjs';
+import { client } from 'telegram';
+
+
 
 const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(path.dirname(__filename), '..', '..');
 
 const DEFAULT_CONFIG = {
@@ -18,8 +22,11 @@ const DEFAULT_CONFIG = {
     .map((platform) => platform.trim().toLowerCase())
     .filter(Boolean),
   telegram: {
+    apiId: process.env.TELEGRAM_MTPROTO_API_ID,
+    apiHash: process.env.TELEGRAM_MTPROTO_API_HASH,
+
     enabled: String(process.env.AUTOPOSTING_TELEGRAM_ENABLED || 'true').toLowerCase() === 'true',
-    channel: process.env.TELEGRAM_AUTOPOST_CHANNEL || '',
+    channel: process.env.RESEARCH_TELEGRAM_CHANNEL || '@myPublicGroupAI',
   },
   habr: {
     enabled: String(process.env.AUTOPOSTING_HABR_ENABLED || 'true').toLowerCase() === 'true',
@@ -200,6 +207,23 @@ export class AutopostingService {
   }
 
   async createDraft({ diffText = '', changedFiles = [], pastPosts = [], idea = '' } = {}) {
+    const cfg = { ...this.config.telegram };
+    let client = await TelegramClientManager.runWithSession(cfg.session,{apiId: cfg.apiId, apiHash: cfg.apiHash});
+    await client.connect();
+    pastPosts = client.getMessages(cfg.channel,{ limit: 10 }).map(msg => ({
+      id: msg.id,
+      text: msg.message || '',
+      date: msg.date,
+      stats: {
+        views: msg.views || 0,
+        forwards: msg.forwards || 0,
+        reactions: msg.reactions ? msg.reactions.results.reduce((acc, r) => acc + r.count, 0) : 0
+      },
+      hasMedia: !!msg.media,
+      url: `https://t.me/${channelUsername.replace('@', '')}/${msg.id}`
+    }));
+    await client.disconnect();
+
     const diffSummary = await this.collectCodeChanges({ diffText, changedFiles });
     const fallback = buildFallbackDraft({ diffSummary, pastPosts, idea });
     const prompt = `Ты SMM-агент Trading AI. По изменениям в push/code diff подготовь посты, но НЕ публикуй их.
@@ -320,29 +344,60 @@ ${JSON.stringify(metricsSummary, null, 2)}
 
   async publishTelegram(pendingDraft) {
     const cfg = { ...this.config.telegram };
-    if (!cfg.channel && pendingDraft.ownerId) {
+  
+    // 1. Попытка прочесть строку сессии из файла session.txt в корне проекта
+    if (!cfg.session) {
+      try {
+        // Если этот файл лежит в подпапке (например, src/services/autoposting.js), 
+        // то поднимаемся на два уровня вверх до корня:
+        console.log('__dirname', __dirname);
+        
+        const sessionPath = path.resolve(__dirname, '..', '..', 'session.txt');
+
+// Теперь можно смело читать
+        const savedSession = await readFile(sessionPath, 'utf-8');
+        cfg.session = savedSession.trim(); // Убираем лишние пробелы и переносы строк
+      } catch (err) {
+        // Если файла нет, просто логируем и идем дальше по старой логике
+        console.log('Файл session.txt не найден или недоступен, проверяем базу данных...');
+      }
+    }
+  
+    // 2. Старая логика: если сессии всё ещё нет, ищем в БД
+    if ((!cfg.session || !cfg.channel) && pendingDraft.ownerId) {
       const sessionConfig = await new TelegramSessionService().getSessionConfig(pendingDraft.ownerId);
-      if (sessionConfig) {
+      if (sessionConfig?.session) {
+        cfg.apiId ||= sessionConfig.apiId;
+        cfg.apiHash ||= sessionConfig.apiHash;
+        cfg.session ||= sessionConfig.session;
         cfg.channel ||= sessionConfig.preferredChannel?.handle || sessionConfig.preferredChannel?.id;
       }
     }
+  
     if (!cfg.enabled) {
       return { platform: 'telegram', status: 'skipped', reason: 'disabled' };
     }
-    if (!cfg.channel || !(await TelegramClientManager.hasSessionFile())) {
+  
+    // 3. Проверка на наличие всех данных (теперь cfg.session заполнена из файла)
+    if (!cfg.apiId || !cfg.apiHash) {
       return {
         platform: 'telegram',
         status: 'needs_credentials',
-        reason: 'Set TELEGRAM_MTPROTO_API_ID, TELEGRAM_MTPROTO_API_HASH, session.txt, TELEGRAM_AUTOPOST_CHANNEL.',
+        reason: 'Set TELEGRAM_MTPROTO_API_ID, TELEGRAM_MTPROTO_API_HASH, TELEGRAM_MTPROTO_SESSION, TELEGRAM_AUTOPOST_CHANNEL.',
       };
     }
-
-    const result = await TelegramClientManager.runAction(async (client) => {
-      return client.sendMessage(cfg.channel, {
-        message: pendingDraft.draft.telegramText,
-        linkPreview: false,
-      });
+  
+    // 4. Подключение и отправка через GramJS (TelegramClient)
+    let client = await TelegramClientManager.runWithSession(cfg.session,{apiId: cfg.apiId, apiHash: cfg.apiHash});
+    
+    
+    await client.connect();
+    const result = await client.sendMessage(cfg.channel, {
+      message: pendingDraft.draft.telegramText,
+      linkPreview: false,
     });
+    await client.disconnect();
+    
     return {
       platform: 'telegram',
       status: 'published',

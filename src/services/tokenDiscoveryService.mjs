@@ -103,10 +103,12 @@ function detectRiskFlags(raw) {
   };
 }
 
+/** Проверяет наличие флагов риска в нормализованном объекте токена. */
 function hasRiskFlags(token) {
   return SUSPICIOUS_TOKEN_FLAGS.some(flag => token.riskFlags?.[flag] === true);
 }
 
+/** Применяет фильтры по ликвидности, холдерам, объему и возрасту к списку токенов. */
 function applyFilters(tokens, filters) {
   return tokens.filter(token => {
     // 1. Стандартные проверки (оставляем как было)
@@ -134,6 +136,7 @@ function applyFilters(tokens, filters) {
   });
 }
 
+/** Рассчитывает скоринг токена на основе ликвидности, объема, холдеров и соотношения покупок. */
 function scoreToken(token) {
   const liquidityScore = Math.log10(token.liquidityUsd + 1) * 20;
   const volumeScore = Math.log10(token.volume24h + 1) * 22;
@@ -217,6 +220,7 @@ function normalizePumpToken(token) {
   };
 }
 
+/** Выполняет HTTP GET запрос с таймаутом и возвращает JSON. */
 async function fetchJson(url, timeoutMs = DEFAULT_SOURCE_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -235,6 +239,7 @@ async function fetchJson(url, timeoutMs = DEFAULT_SOURCE_TIMEOUT_MS) {
   }
 }
 
+/** Инициализирует и возвращает фильтры для поиска токенов из сессии Telegram-пользователя. */
 export function getTokenDiscoveryFilters(ctx) {
   if (!ctx.session) ctx.session = {};
   if (!ctx.session.tokenDiscoveryFilters) {
@@ -254,6 +259,7 @@ export class TokenDiscoveryService {
     this.timeoutMs = timeoutMs;
   }
 
+  /** Агрегирует, фильтрует и сортирует топ токенов из всех доступных DEX-источников. */
   async discoverTopTokens(filters = DEFAULT_DISCOVERY_FILTERS, onStatusUpdate = null) {
     const [pumpTokens, dexTokens, geckoTokens] = await Promise.all([
       this.fetchPumpFunTokens(onStatusUpdate),
@@ -273,6 +279,7 @@ export class TokenDiscoveryService {
       .slice(0, 10);
   }
 
+  /** Получает и нормализует список свежих токенов с Pump.fun. */
   async fetchPumpFunTokens(onStatusUpdate = null) {
     const urls = [
       'https://frontend-api-v3.pump.fun/coins?offset=0&limit=50&sort=created_timestamp&order=DESC&includeNsfw=false',
@@ -292,6 +299,7 @@ export class TokenDiscoveryService {
     return [];
   }
 
+  /** Выполняет поиск трендовых токенов через API DexScreener по популярным запросам. */
   async fetchDexScreenerTokens(onStatusUpdate = null) {
     const results = [];
     await Promise.all(DEXSCREENER_SEARCH_QUERIES.map(async query => {
@@ -307,6 +315,7 @@ export class TokenDiscoveryService {
     return results.filter(token => token.address || token.pairAddress);
   }
 
+  /** Запрашивает и нормализует трендовые пулы из GeckoTerminal для поддерживаемых сетей. */
   async fetchGeckoTerminalTokens(onStatusUpdate = null) {
     const results = [];
     await Promise.all(GECKOTERMINAL_NETWORKS.map(async network => {

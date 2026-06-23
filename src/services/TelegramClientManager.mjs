@@ -77,7 +77,7 @@ export class TelegramClientManager {
   }
 
   static async runWithSession(sessionString, actionCallback, { apiId, apiHash } = readApiConfig()) {
-    if (typeof actionCallback !== 'function') throw new Error('actionCallback must be a function.');
+    // if (typeof actionCallback !== 'function') throw new Error('actionCallback must be a function.');
     await TelegramClientManager.waitBeforeConnect();
     const client = new TelegramClient(
       new StringSession(sessionString || ''),
@@ -85,11 +85,6 @@ export class TelegramClientManager {
       apiHash,
       { connectionRetries: 3 },
     );
-    await client.connect();
-    try {
-      return await actionCallback(client, { apiId, apiHash });
-    } finally {
-      await safeDisconnect(client);
-    }
+    return client;
   }
 }

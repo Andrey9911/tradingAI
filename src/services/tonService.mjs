@@ -167,6 +167,7 @@ export class TonService {
     this.fetchImpl = fetchImpl;
   }
 
+  /** Выполняет HTTP запрос к TonAPI с повторными попытками при ошибках (Rate Limit/Network). */
   async fetchJson(pathname) {
     if (typeof this.fetchImpl !== 'function') {
       throw new Error('fetch unavailable for TonAPI');
@@ -213,14 +214,17 @@ export class TonService {
     throw lastError || new Error('TonAPI request failed');
   }
 
+  /** Получает базовую информацию о токене (Jetton) в сети TON по его адресу. */
   async getJettonInfo(address) {
     return await this.fetchJson(`/jettons/${encodeURIComponent(address)}`);
   }
 
+  /** Запрашивает список крупнейших держателей токена (Jetton) в сети TON. */
   async getJettonHolders(address, limit = 10) {
     return await this.fetchJson(`/jettons/${encodeURIComponent(address)}/holders?limit=${limit}`);
   }
 
+  /** Анализирует токен TON, выявляя распределение холдеров, наличие администратора и уровень риска. */
   async analyzeTonToken(token, onStatusUpdate = null) {
     const accountId = firstString(token?.address, token?.tokenAddress);
     if (!accountId) return unknownTonIntel('TON token address missing');
@@ -293,6 +297,7 @@ export class TonService {
   }
 }
 
+/** Обертка для инстанцирования сервиса и запуска анализа токена TON. */
 export async function analyzeTonToken(token, onStatusUpdate = null, options = {}) {
   return await new TonService(options).analyzeTonToken(token, onStatusUpdate);
 }

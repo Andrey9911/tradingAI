@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?><rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+    <channel>
+        <title><![CDATA[Trading AI autopost drafts]]></title>
+        <description><![CDATA[Trading AI approved autopost drafts for Dzen RSS ingestion.]]></description>
+        <link>https://example.com</link>
+        <generator>RSS for Node</generator>
+        <lastBuildDate>Tue, 02 Jun 2026 11:11:42 GMT</lastBuildDate>
+        <atom:link href="https://example.com/dzen.xml" rel="self" type="application/rss+xml"/>
+        <language><![CDATA[ru]]></language>
+        <item>
+            <title><![CDATA[Trading AI: обновление по коду]]></title>
+            <description><![CDATA[<h1>Trading AI: обновление по коду</h1><p>🧠 Trading AI update<br><br>Изменения в коде: src/services/TelegramClientManager.mjs, src/services/autopostingService.mjs<br>Объём изменений: 2 file(s), +49/-18.<br>Ключевые точки: const __dirname = path.dirname(__filename);; const sessionPath = path.resolve(__dirname, '..', '..', 'session.txt');; const savedSession = await readFile(sessionPath, 'utf-8');.<br><br>Пиши как короткое обновление для Telegram-канала. Публикация не отправляется без ручного подтверждения.</p>]]></description>
+            <link>https://example.com/autopost/autopost_1780398695571_jq0mnq/trading-ai-обновление-по-коду</link>
+            <guid isPermaLink="false">https://example.com/autopost/autopost_1780398695571_jq0mnq/trading-ai-обновление-по-коду</guid>
+            <pubDate>Tue, 02 Jun 2026 11:11:42 GMT</pubDate>
+            <content:encoded><![CDATA[<h1>Trading AI: обновление по коду</h1><p>🧠 Trading AI update<br><br>Изменения в коде: src/services/TelegramClientManager.mjs, src/services/autopostingService.mjs<br>Объём изменений: 2 file(s), +49/-18.<br>Ключевые точки: const __dirname = path.dirname(__filename);; const sessionPath = path.resolve(__dirname, '..', '..', 'session.txt');; const savedSession = await readFile(sessionPath, 'utf-8');.<br><br>Пиши как короткое обновление для Telegram-канала. Публикация не отправляется без ручного подтверждения.</p>]]></content:encoded>
+        </item>
+    </channel>
+</rss>
