@@ -1,7 +1,7 @@
-import { Composer, Keyboard } from 'grammy';
+import { Composer, Keyboard, InlineKeyboard } from 'grammy';
 import { showAssets } from './assets.mjs';
 import { showLimitOrders } from './orders.mjs';
-import { runSignalSearch } from './signals.mjs';
+import { runSignalSearch, runUserSignalAnalysis } from './signals.mjs';
 import { showSettingsMenu } from './settings.mjs';
 // import { runAiSignal } from './aiSignalComposer.mjs';
 import { runWeb3Discovery } from './web3Discovery.mjs';
@@ -22,7 +22,7 @@ export function buildMainMenuKeyboard() {
     .resized();
 }
 
-    
+
 
 
 /** Отправить приветствие и reply-клавиатуру главного меню */
@@ -42,6 +42,30 @@ mainMenuComposer.command('start', async (ctx) => {
 
 // Обработка нажатий на кнопки главного меню
 mainMenuComposer.on('message:text', async (ctx, next) => {
+  if (ctx.session && ctx.session.awaitingSignal) {
+    ctx.session.awaitingSignal = false; // Reset the state
+    const text = ctx.message.text.trim();
+    
+    // Ищем направление
+    let direction = null;
+    if (/\bshort\b/i.test(text) || /\bшорт\b/i.test(text)) direction = 'SHORT';
+    else if (/\blong\b/i.test(text) || /\bлонг\b/i.test(text)) direction = 'LONG';
+
+    // Разделяем сообщение на строки
+    const lines = text.split('\n');
+    // Очищаем первую строку от эмодзи и спецсимволов для надежного поиска тикера
+    const firstLineClean = lines[0].replace(/[^\w\s-]/gi, '').trim();
+    const ticker = firstLineClean.split(/\s+/)[0];
+    
+    // Оставляем весь текст как описание, чтобы ИИ видел все детали (плечо, цены и т.д.)
+    const description = text;
+    
+    console.log('Parsed signal:', ticker, direction);
+
+    await runUserSignalAnalysis(ctx, ticker, description, direction);
+    return;
+  }
+
   if (ctx.message.text === '💰 Активы') {
     await showAssets(ctx);
   }
@@ -49,13 +73,19 @@ mainMenuComposer.on('message:text', async (ctx, next) => {
     await showLimitOrders(ctx);
   }
   if (ctx.message.text === '🔍 Поиск сигналов') {
-    await runSignalSearch(ctx);
+    const inlineKeyboard = new InlineKeyboard()
+      .text('📈 Анализ рынка', 'menu_signals-market').row()
+      .text('🔎 Анализ сигнала', 'menu_signals-analyze');
+
+    await ctx.reply('Выберите тип поиска сигналов:', {
+      reply_markup: inlineKeyboard
+    });
   }
   if (ctx.message.text === '⚙️ Настройки') {
     await showSettingsMenu(ctx);
   }
 
-  
+
 
   if (ctx.message.text === '🧠 AI-аналитика') {
     await ctx.reply('🤖 AI-аналитика в разработке. Скоро вы сможете получать прогнозы по выбранным монетам.');
@@ -72,7 +102,7 @@ mainMenuComposer.on('message:text', async (ctx, next) => {
   if (ctx.message.text === '🤖 AI анализ мемок') {
     // await runAiSignal(ctx);  //TODO: Добавить обработку мемок
     await ctx.reply('🤖 AI анализ мемок');
-    
+
     return;
   }
   return next();
@@ -80,13 +110,15 @@ mainMenuComposer.on('message:text', async (ctx, next) => {
 mainMenuComposer.callbackQuery(/^menu_/, async (ctx) => {
   // Важно: ответ на callback нужно отправлять быстро.
   // Иначе Telegram успевает "протухнуть" query и grammy кидает 400.
-  await ctx.answerCallbackQuery().catch(() => {});
+  await ctx.answerCallbackQuery().catch(() => { });
 
   const action = ctx.callbackQuery.data.split('_')[1];
+  console.log(action);
+
   switch (action) {
     case 'assets':
-        await ctx.reply('Загрузка активов...');
-        await showAssets(ctx);
+      await ctx.reply('Загрузка активов...');
+      await showAssets(ctx);
       // Передаём управление композеру assets, но вызываем функцию напрямую?
       // Удобнее вызвать метод, который уже есть в другом композере.
       // Для этого можно импортировать вспомогательную функцию или использовать контекст.
@@ -100,8 +132,12 @@ mainMenuComposer.callbackQuery(/^menu_/, async (ctx) => {
     case 'orders':
       await showLimitOrders(ctx);
       break;
-    case 'signals':
+    case 'signals-market':
       await runSignalSearch(ctx);
+      break;
+    case 'signals-analyze':
+      ctx.session.awaitingSignal = true;
+      await ctx.reply('Отправьте мне сообщение с сигналом.\n\nПервая строка — тикер (например, BTC).\nОстальные строки — описание или ваш комментарий.');
       break;
     case 'settings':
       await showSettingsMenu(ctx);

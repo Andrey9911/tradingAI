@@ -328,6 +328,19 @@ export class TokenDiscoveryService {
     return results.filter(token => token.address || token.pairAddress);
   }
 
+  /** Выполняет поиск токена по конкретному запросу (тикеру) */
+  async fetchDexScreenerTokenByQuery(query, onStatusUpdate = null) {
+    try {
+      const data = await fetchJson(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`, this.timeoutMs);
+      const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
+      const results = pairs.map(pair => normalizeDexScreenerPair(pair));
+      return results.filter(token => token.address || token.pairAddress);
+    } catch (err) {
+      if (onStatusUpdate) await onStatusUpdate(`⚠️ DexScreener ${query}: ${err.message}`);
+      return [];
+    }
+  }
+
   /** Запрашивает и нормализует трендовые пулы из GeckoTerminal для поддерживаемых сетей. */
   async fetchGeckoTerminalTokens(onStatusUpdate = null) {
     const results = [];

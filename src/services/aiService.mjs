@@ -281,7 +281,7 @@ RSI(14) по закрытиям 1h: ${metrics.rsi14 != null ? metrics.rsi14.toFi
     try {
       const data = await this.chatWithModelFallback({
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 1000,
+        max_tokens: 100000,
         temperature: 0.35,
       }, onStatusUpdate); // <-- Передаем колбэк дальше
 
@@ -423,7 +423,7 @@ SL в сигнале: ${ctx.hasSl ? 'да' : 'нет'}
     try {
       const data = await this.chatWithModelFallback({
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 220,
+        max_tokens: 20020,
         temperature: 0.45,
       });
       const text = data?.choices?.[0]?.message?.content?.trim();
@@ -495,6 +495,41 @@ ${posts.map((post, index) => `${index + 1}. [${post.channel}] ${String(post.text
     return data?.choices?.[0]?.message?.content?.trim() || '';
   }
 
+  /**
+   * Анализирует посты канала для формирования описания уникального стиля (тон, структура)
+   * и общего контекста/мнения автора (opinion_text). Возвращает JSON-объект.
+   *
+   * @param {string[]} posts - Массив текстов постов для анализа
+   * @returns {Promise<{ style_description: string, opinion_text: string }>} Результат анализа
+   */
+  async analyzePostsStyle(posts) {
+    const prompt = `Проанализируй эти посты. Сформируй детальное описание стиля написания (тон, подача, структура) и добавь в поле style_description. Выдели общий контекст из постов, дай общее мнение по ним  в поле opinion_text.
+
+Вывод LLM должен быть строго в формате JSON:
+{
+  "style_description": "...",
+  "opinion_text": "..."
+}
+
+Посты:
+${JSON.stringify(posts, null, 2)}`;
+
+    const data = await this.chatWithModelFallback({
+      messages: [{ role: 'system', content: prompt }],
+      max_tokens: 15000,
+      temperature: 0.5,
+      response_format: { type: 'json_object' }
+    });
+
+    const raw = data?.choices?.[0]?.message?.content?.trim() || '';
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('ИИ не вернул структурированный JSON ответ.');
+    }
+
+    return JSON.parse(jsonMatch[0]);
+  }
+
   /** Анализирует сырые данные транзакций для выявления паттернов манипуляции, аккумуляции или распределения китами. */
   async analyzeRawTransactions(transactions, tokenContext = {}, onStatusUpdate = null) {
     const prompt = `Ты On-chain аналитик. Проанализируй список сырых транзакций токена.
@@ -530,21 +565,25 @@ ${JSON.stringify(transactions).slice(0, 15000)}
   }
 
   /** Блок AI: Анализ новостей и формирование поста с shill интеграцией */
-  async generateCryptoNewsPost(newsArray) {
+  async generateCryptoNewsPost(newsArray, styleContext = null) {
     const prompt = `Ты — девушка Катя - криптоаналитик и автор инсайдерского Telegram-канала.
 Твоя задача: проанализировать переданные новости и написать короткий, интригующий и цепляющий пост.
 
 Правила стиля для поста:
 1. Краткость и динамика: Пиши емко, без воды. Используй короткие абзацы (1-3 предложения).
 2. Интрига: Зацепи внимание с первого предложения. Делай неочевидные выводы из новостей, заставляя читателя задуматься.
-3. Эмодзи: Органично используй релевантные эмодзи (например: 📊, 🐳, ⚠️, 🚀, 💡), но не превращай текст в новогоднюю елку (максимум 3-5 штук на пост).
-4. Тон: Уверенный, аналитический, "я знаю больше, чем толпа".
+3. Эмодзи: Органично используй релевантные эмодзи.
+4. Тон: Уверенный, аналитический, местами тонко-юморной, местами ироничный, но всегда актуальный. Имеет место быть, используй сленговые выражения.
 
 Интеграция (Soft Shill):
 Сформируй отдельный текст для нативной, "холодной" интеграции нашего закрытого продукта.
 Контекст продукта: Проект \`tradingAI\` — приватный многофункциональный Telegram-бот для автоматизации трейдинга (Bybit, TON), парсинга каналов и обработки сигналов с помощью ИИ.
 Как интегрировать: Не продавай в лоб. Упомяни бота вскользь. Например, намекни, что пока толпа читает новости, твой скрипт уже отторговал этот тренд, или что бот еще ночью прислал алерт по этой ситуации.
 
+${styleContext ? `КОНТЕКСТ ТВОЕГО СТИЛЯ (используй для сохранения уникального тона):
+Описания стиля: ${styleContext.styleDescriptions?.join(' | ') || 'нет'}
+Примеры мнений: ${styleContext.opinionTexts?.slice(0, 3).join(' | ') || 'нет'}
+` : ''}
 Новости для анализа:
 ${JSON.stringify(newsArray, null, 2)}
 

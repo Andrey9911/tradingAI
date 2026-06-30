@@ -3,6 +3,10 @@ import { BybitService } from '../services/bybitService.mjs';
 import { AIService } from '../services/aiService.mjs';
 import { InlineKeyboard } from 'grammy';
 import { getNewsSentiment } from '../services/searchNews/searchNews.mjs';
+import { TokenDiscoveryService } from '../services/tokenDiscoveryService.mjs';
+import { WalletIntelService } from '../services/walletIntelService.mjs';
+import ccxt from 'ccxt';
+import { RSI, EMA } from 'technicalindicators';
 
 const DEFAULT_SIGNAL_SETTINGS = {
   /** спред для сигнала на продажу (>= %) */
@@ -45,6 +49,66 @@ export function computeRsi(closes, period = 14) {
   if (avgLoss === 0) return 100;
   const rs = avgGain / avgLoss;
   return 100 - 100 / (1 + rs);
+}
+
+/**
+ * Получение исторических данных и расчет базового технического анализа
+ * @param {string} ticker - Тикер монеты (например, 'ENJ')
+ * @param {string} timeframe - Таймфрейм свечей (по умолчанию '4h')
+ * @param {number} limit - Количество свечей
+ */
+export async function getTechnicalAnalysis(ticker, timeframe = '4h', limit = 100) {
+  try {
+    const exchange = new ccxt.bybit();
+    const baseTicker = ticker.toUpperCase().replace(/USDT$/, '');
+    const symbol = `${baseTicker}/USDT`;
+
+    const ohlcv = await exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
+
+    if (!ohlcv || ohlcv.length === 0) {
+      return { error: 'Нет данных OHLCV' };
+    }
+
+    const highs = ohlcv.map(candle => candle[2]);
+    const lows = ohlcv.map(candle => candle[3]);
+    const closes = ohlcv.map(candle => candle[4]);
+    const currentPrice = closes[closes.length - 1];
+
+    const rsiResult = RSI.calculate({ values: closes, period: 14 });
+    const rsi = rsiResult.length > 0 ? rsiResult[rsiResult.length - 1] : null;
+
+    const ema20Result = EMA.calculate({ values: closes, period: 20 });
+    const ema50Result = EMA.calculate({ values: closes, period: 50 });
+    const ema20 = ema20Result.length > 0 ? ema20Result[ema20Result.length - 1] : null;
+    const ema50 = ema50Result.length > 0 ? ema50Result[ema50Result.length - 1] : null;
+
+    let trend = 'Neutral';
+    if (ema20 && ema50) {
+      if (ema20 > ema50) trend = 'Bullish (EMA20 > EMA50)';
+      else if (ema20 < ema50) trend = 'Bearish (EMA20 < EMA50)';
+    }
+
+    const recentLimit = 20;
+    const recentHighs = highs.slice(-recentLimit);
+    const recentLows = lows.slice(-recentLimit);
+    
+    const resistance = Math.max(...recentHighs);
+    const support = Math.min(...recentLows);
+
+    return {
+      timeframe,
+      rsi: rsi ? parseFloat(rsi.toFixed(2)) : null,
+      trend,
+      ema20: ema20 ? parseFloat(ema20.toFixed(4)) : null,
+      ema50: ema50 ? parseFloat(ema50.toFixed(4)) : null,
+      support,
+      resistance,
+      currentPrice
+    };
+  } catch (err) {
+    console.error(`Ошибка в getTechnicalAnalysis для ${ticker}:`, err.message);
+    return { error: 'Не удалось рассчитать ТА' };
+  }
 }
 
 function baseCoinFromSpotSymbol(symbol) {
@@ -354,3 +418,175 @@ function chunkHtmlMessage(html, maxLen) {
   if (rest.length) parts.push(rest);
   return parts;
 }
+
+export async function runUserSignalAnalysis(ctx, ticker, description, direction = null) {
+  let keys;
+  try {
+    keys = await new AuthService().getUserKeys(ctx.from.id);
+    if (!keys) {
+      await ctx.reply('❌ Вы не зарегистрированы. Используйте /register');
+      return;
+    }
+  } catch (err) {
+    await ctx.reply(`Ошибка ключей: ${err.message}`);
+    return;
+  }
+
+  const loading = await ctx.reply(`⏳ Начинаю анализ сигнала по тикеру: <b>${escapeHtml(ticker)}</b>...`, { parse_mode: 'HTML' });
+  let statusText = `🔍 <b>Анализирую сигнал по ${escapeHtml(ticker)}...</b>\n\n`;
+
+  const updateStatus = async (newLine) => {
+    try {
+      const lines = statusText.split('\n');
+      lines.push(newLine);
+      statusText = lines.slice(-10).join('\n');
+      
+      await ctx.api.editMessageText(loading.chat.id, loading.message_id, statusText, {
+        parse_mode: 'HTML'
+      });
+    } catch (e) {
+      // Игнорируем ошибки Telegram (например message not modified)
+    }
+  };
+
+  try {
+    const bybit = new BybitService(keys.apiKey, keys.apiSecret);
+    const ai = new AIService();
+    
+    // 1. Быстрый сбор метрик Bybit и Технического анализа (ПАРАЛЛЕЛЬНО)
+    await updateStatus('📊 Запрашиваю рыночные данные и вычисляю технический анализ...');
+    const symbol = ticker.toUpperCase().endsWith('USDT') ? ticker.toUpperCase() : `${ticker.toUpperCase()}USDT`;
+    const baseTicker = baseCoinFromSpotSymbol(symbol) || ticker;
+    
+    const [
+      currentPrice,
+      klineData,
+      spreadPct,
+      change24h,
+      volume24h,
+      deriv,
+      newsSentiment,
+      technicalAnalysis
+    ] = await Promise.all([
+      bybit.getCurrentPrice(symbol),
+      bybit.getKlineHourlyData(symbol, 30),
+      bybit.getBidAskSpreadPct(symbol),
+      bybit.get24hChange(symbol),
+      bybit.get24hVolume(symbol),
+      bybit.getDerivativesContext(symbol),
+      getNewsSentiment(baseTicker),
+      getTechnicalAnalysis(baseTicker, '4h')
+    ]);
+
+    const { closes, volumeSpike } = klineData;
+    const rsi14 = computeRsi(closes, 14);
+
+    // 2. Token & Wallet Intelligence
+    await updateStatus('🕵️ Выполняю on-chain анализ токена...');
+    const tokenDiscovery = new TokenDiscoveryService();
+    const walletIntel = new WalletIntelService();
+    
+    // Ищем токен на DEX
+    const searchResults = await tokenDiscovery.fetchDexScreenerTokenByQuery(ticker, updateStatus);
+    const tokenData = searchResults.find(t => t.symbol.toUpperCase() === ticker.toUpperCase()) || null;
+    let walletData = null;
+
+    if (tokenData) {
+      await updateStatus('🧠 Собираю on-chain данные о кошельках и кластерах...');
+      walletData = await walletIntel.analyzeToken(tokenData, updateStatus);
+    } else {
+      await updateStatus('⚠️ Токен не найден в DEX сетях, продолжаем анализ с CEX данными.');
+    }
+
+    // 3. Aggregate data for AI
+    await updateStatus('🤖 Формирую отчет с помощью нейросети...');
+    
+    const aggregatedData = {
+      ticker,
+      direction,
+      description,
+      market: {
+        price: currentPrice,
+        change24h,
+        volume24h,
+        rsi14,
+        spreadPct,
+        volumeSpike,
+      },
+      technical_analysis: technicalAnalysis,
+      derivatives: deriv,
+      news: newsSentiment,
+      onchain: tokenData ? {
+        token: tokenData,
+        wallets: walletData
+      } : null
+    };
+
+    // Use AI to evaluate
+    const prompt = `Проанализируй предоставленный сигнал на краткосрочную позицию от пользователя и собранные данные.
+Сигнал: ${description}
+Собранные данные: ${JSON.stringify(aggregatedData)}
+
+В объекте "technical_analysis" находится готовая выжимка графика: тренд по средним (EMA), индикатор RSI, а также ближайшие локальные уровни поддержки и сопротивления.
+Твоя задача — синтезировать эту техническую картину с фундаментальными рисками (новости, on-chain метрики, фандинг). 
+Если техническая картина расходится с фундаментальной, укажи это как риск.
+
+Дай вердикт (BUY/SELL/WAIT) и краткое обоснование (не более 1000 символов, на русском). Отвечай только валидным JSON: {"verdict": "VERDICT", "reason": "reason"}`;
+    
+    let aiResponse;
+    try {
+      const aiRaw = await ai.chatWithModelFallback({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 15000,
+        temperature: 0.3
+      }, updateStatus);
+      
+      const rawMatch = aiRaw.choices[0].message.content.match(/\{[\s\S]*\}/);
+      if (rawMatch) {
+         aiResponse = JSON.parse(rawMatch[0]);
+      } else {
+         aiResponse = { verdict: 'UNKNOWN', reason: 'Не удалось разобрать ответ нейросети.' };
+      }
+    } catch (e) {
+      aiResponse = { verdict: 'ERROR', reason: 'Ошибка при обращении к нейросети.' };
+    }
+
+    let report = `<b>Анализ сигнала: ${escapeHtml(ticker)}</b> ${direction ? `[${escapeHtml(direction)}]` : ''}\n`;
+    report += `<i>Пользовательское описание: \n${escapeHtml(description)}</i>\n\n`;
+    
+    if (currentPrice) {
+      report += `<b>Рыночные данные:</b>\n`;
+      report += `Цена: ${currentPrice}\n`;
+      report += `Изм. 24ч: ${change24h.toFixed(2)}%\n`;
+      if (rsi14) report += `RSI(14): ${rsi14.toFixed(1)}\n`;
+      if (volumeSpike) report += `Volume Spike: ${volumeSpike.toFixed(2)}x\n`;
+      if (deriv.fundingRate != null) report += `Фандинг: ${deriv.fundingRate.toFixed(4)}%\n`;
+      if (deriv.oiChangePct != null) report += `OI Изм.: ${deriv.oiChangePct.toFixed(2)}%\n`;
+      report += `\n`;
+    }
+
+    if (tokenData) {
+      report += `<b>On-chain данные (${escapeHtml(tokenData.chain)}):</b>\n`;
+      report += `Ликвидность: $${tokenData.liquidityUsd?.toFixed(0)}\n`;
+      report += `Возраст: ${Math.round(tokenData.ageMinutes || 0)} мин\n`;
+      if (walletData && walletData.riskLevel) {
+        report += `Риск: ${walletData.riskLevel}\n`;
+        report += `Паттерн: ${walletData.transferPattern}\n`;
+      }
+      report += `\n`;
+    }
+    
+    const vTag = aiResponse.verdict === 'BUY' ? '🟢 BUY' : aiResponse.verdict === 'SELL' ? '🔴 SELL' : '🟡 ' + aiResponse.verdict;
+    report += `<b>Вердикт ИИ:</b> ${vTag}\n`;
+    report += `<i>${escapeHtml(aiResponse.reason)}</i>`;
+
+    await ctx.api.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
+    await ctx.reply(report, { parse_mode: 'HTML' });
+
+  } catch (err) {
+    console.error('runUserSignalAnalysis', err);
+    await ctx.api.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
+    await ctx.reply(`❌ Ошибка анализа: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+  }
+}
+

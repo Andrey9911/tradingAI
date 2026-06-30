@@ -15,6 +15,8 @@ import { ResearchCacheService } from '../services/researchCacheService.mjs';
 import { executeResearchPipeline, fetchCryptoNewsForAutoposting } from '../services/researchPipelineService.mjs';
 import { parseResearchChannels } from '../services/telegramScraperService.mjs';
 import { AIService } from '../services/aiService.mjs';
+import { TelegramClientManager } from '../services/TelegramClientManager.mjs';
+import { supabase } from '../db/supabaseClient.mjs';
 
 
 const execFileAsync = promisify(execFile);
@@ -140,7 +142,8 @@ async function showAutopostingManagementMenu(ctx) {
   const state = ensureAutopostingSession(ctx);
   const config = getAutopostingConfig();
   const mtprotoStatus = await storedMtprotoStatus(ctx);
-  const basket = await new TradingMetricsService().listDrafts({ limit: 5 });
+  const cacheService = new ResearchCacheService();
+  const basket = cacheService.getAllDrafts();
   const text = `<b>📣 Autoposting Center</b>\n\n` +
     `SMM-агент собирает изменения в push/code, сверяет стиль с прошлыми постами и готовит публикации. ` +
     `Отправка возможна только после вашего ручного одобрения.\n\n` +
@@ -247,20 +250,31 @@ autopostingComposer.callbackQuery('buildPostCrypto_news', async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
   const loading = await ctx.reply('⏳ Собираю пост по крипто-новостям...');
   try {
-    const news = await fetchCryptoNewsForAutoposting();
+    const result = await fetchCryptoNewsForAutoposting();
+    const news = result.news;
     if (!news || news.length === 0) {
       await ctx.api.editMessageText(loading.chat.id, loading.message_id, '❌ Нет новостей за последние 2 дня.');
       return;
     }
     
     const aiService = new AIService();
-    const generatedPost = await aiService.generateCryptoNewsPost(news);
+    const generatedPost = await aiService.generateCryptoNewsPost(news, result.styleContext);
+    
+    const fullText = `${generatedPost.content}\n\n${generatedPost.soft_shill}`;
+    const draftId = `draft_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    
+    ctx.session ??= {};
+    ctx.session.autoposting ??= {};
+    ctx.session.autoposting.lastGeneratedPost = { id: draftId, text: fullText };
     
     await ctx.api.editMessageText(
       loading.chat.id,
       loading.message_id,
-      `<b>Сгенерированный пост (Крипто-новости):</b>\n\n${escapeHtml(generatedPost.content)}\n\n${escapeHtml(generatedPost.soft_shill)}`,
-      { parse_mode: 'HTML' }
+      `<b>Сгенерированный пост (Крипто-новости):</b>\n\n${escapeHtml(fullText)}`,
+      { 
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard().text('📥 Добавить в черновики', `draft_add:${draftId}`)
+      }
     );
   } catch (err) {
     await ctx.api.editMessageText(
@@ -270,6 +284,23 @@ autopostingComposer.callbackQuery('buildPostCrypto_news', async (ctx) => {
       { parse_mode: 'HTML' }
     );
   }
+});
+
+autopostingComposer.callbackQuery(/^draft_add:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  const draftId = ctx.match[1];
+  const post = ctx.session?.autoposting?.lastGeneratedPost;
+  
+  if (!post || post.id !== draftId) {
+    await ctx.reply('❌ Черновик устарел или не найден.');
+    return;
+  }
+  
+  const cacheService = new ResearchCacheService();
+  cacheService.addDraft(post.id, post.text);
+  
+  await ctx.api.editMessageReplyMarkup(ctx.chat.id, ctx.msg.message_id, { reply_markup: new InlineKeyboard() }).catch(() => {});
+  await ctx.reply(`✅ Пост добавлен в корзину (ID: ${post.id}). Перейдите в "🧺 Корзина постов".`);
 });
 
 autopostingComposer.callbackQuery('buildPostDev', async (ctx) => {
@@ -364,11 +395,62 @@ autopostingComposer.callbackQuery('research_add_channel', async (ctx) => {
 autopostingComposer.callbackQuery('autoposting_add_samples', async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
   const state = ensureAutopostingSession(ctx);
-  ctx.session.autopostingStep = 'pastPosts';
-  await ctx.reply(
-    `Пришлите 1–5 прошлых постов одним сообщением. Я сохраню их только в текущей session для анализа стиля.\n\n` +
-      `Сейчас samples: ${state.pastPosts.length}`,
-  );
+  const loading = await ctx.reply('⏳ Парсинг последних постов из канала...');
+
+  try {
+    const channel = process.env.TELEGRAM_AUTOPOST_CHANNEL; // [SECURE_VARIABLE]
+    if (!channel) {
+      await ctx.api.editMessageText(loading.chat.id, loading.message_id,
+        '❌ TELEGRAM_AUTOPOST_CHANNEL не задан в .env');
+      return;
+    }
+
+    const limit = Number(process.env.AUTOPOST_SAMPLES_LIMIT || 10);
+    
+    const posts = await TelegramClientManager.runAction(async (client) => {
+      const messages = await client.getMessages(channel, { limit });
+      return messages
+        .map(msg => (msg.message || '').trim())
+        .filter(Boolean);
+    });
+
+    state.pastPosts = posts;
+    
+    await ctx.api.editMessageText(
+      loading.chat.id, 
+      loading.message_id,
+      `✅ Собрано ${posts.length} постов из ${channel} для анализа стиля. Ожидайте анализ...`, {
+        reply_markup: buildAutopostingKeyboard(state.pendingDraft),
+      }
+    );
+
+    // AI Анализ стиля
+    const aiService = new AIService();
+    const styleAnalysis = await aiService.analyzePostsStyle(posts);
+
+    // Сохранение в Supabase
+    try {
+      const { error } = await supabase.from('post_analysis_vectors').insert([{
+        raw_style_description: styleAnalysis.style_description,
+        raw_opinion_text: styleAnalysis.opinion_text,
+      }]);
+      
+      if (error) {
+        console.error('Ошибка сохранения стиля в БД:', error.message);
+      } else {
+        await ctx.reply('✅ Стиль успешно проанализирован и сохранен в БД.');
+      }
+    } catch (dbErr) {
+      console.error('Непредвиденная ошибка при работе с БД:', dbErr.message);
+    }
+  } catch (err) {
+    await ctx.api.editMessageText(
+      loading.chat.id, 
+      loading.message_id,
+      `❌ Ошибка парсинга: ${escapeHtml(err.message)}`,
+      { parse_mode: 'HTML' }
+    );
+  }
 });
 
 autopostingComposer.callbackQuery('autoposting_env', async (ctx) => {
@@ -397,53 +479,97 @@ autopostingComposer.callbackQuery('autoposting_auth_chat', async (ctx) => {
 
 autopostingComposer.callbackQuery('autoposting_basket', async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
-  const drafts = await new TradingMetricsService().listDrafts({ limit: 5 });
+  const cacheService = new ResearchCacheService();
+  const drafts = cacheService.getAllDrafts();
+  
   if (!drafts.length) {
     await ctx.reply('🧺 Корзина постов пуста.', {
       reply_markup: new InlineKeyboard().text('◀️ Назад', 'autoposting_back'),
     });
     return;
   }
-  const keyboard = new InlineKeyboard();
-  const text = drafts.map((draft, index) => {
-    keyboard.text(`✅ #${index + 1}`, `autoposting_basket_approve_${draft.id}`)
-      .text(`❌ #${index + 1}`, `autoposting_basket_reject_${draft.id}`)
-      .row();
-    return `<b>#${index + 1} ${escapeHtml(draft.title)}</b>\n${escapeHtml(draft.preview)}`;
-  }).join('\n\n────────────\n\n');
+
+  const text = drafts.map(d => `ID: ${d.id}\n${escapeHtml(d.text)}`).join('\n\n────────────\n\n');
+  
+  const keyboard = new InlineKeyboard()
+    .text('🚀 Опубликовать все', 'basket_publish_all').row();
+  drafts.forEach((d, index) => {
+    keyboard.text(`Опубликовать #${index + 1}`, `basket_publish:${d.id}`)
+            .text(`Удалить #${index + 1}`, `basket_delete:${d.id}`).row();
+  });
   keyboard.text('◀️ Назад', 'autoposting_back');
-  await ctx.reply(`<b>🧺 Корзина draft-постов</b>\n\n${text}`, {
+  
+  await ctx.reply(`<b>🧺 Корзина черновиков:</b>\n\n${text}`, {
     parse_mode: 'HTML',
     disable_web_page_preview: true,
     reply_markup: keyboard,
   });
 });
 
-autopostingComposer.callbackQuery(/^autoposting_basket_reject_(.+)$/, async (ctx) => {
+autopostingComposer.callbackQuery(/^basket_publish:(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
-  await new TradingMetricsService().updateDraftStatus(ctx.match[1], 'rejected');
-  await ctx.reply('Draft из корзины отклонён. Ничего не опубликовано.');
-});
-
-autopostingComposer.callbackQuery(/^autoposting_basket_approve_(.+)$/, async (ctx) => {
-  await ctx.answerCallbackQuery().catch(() => {});
-  const metrics = new TradingMetricsService();
-  const draft = (await metrics.listDrafts({ status: null, limit: 100 })).find((item) => item.id === ctx.match[1]);
-  if (!draft?.pendingDraft) {
-    await ctx.reply('Draft не найден в корзине.');
+  const draftId = ctx.match[1];
+  const cacheService = new ResearchCacheService();
+  const draft = cacheService.getDraft(draftId);
+  
+  if (!draft) {
+    await ctx.reply('❌ Черновик не найден.');
     return;
   }
-  const service = new AutopostingService();
-  const approved = await service.approveDraft({ ...draft.pendingDraft, ownerId: ctx.from?.id }, ctx.from?.id);
-  const results = await service.publishApproved(approved);
-  await metrics.updateDraftStatus(draft.id, 'published', { publishedAt: new Date().toISOString(), results });
-  const resultText = results
-    .map((result) => `• ${result.platform}: ${result.status}${result.reason ? ` — ${result.reason}` : ''}`)
-    .join('\n');
-  await ctx.reply(`<b>Basket autoposting result</b>\n${escapeHtml(resultText)}`, {
-    parse_mode: 'HTML',
-    disable_web_page_preview: true,
-  });
+  
+  const channel = process.env.TELEGRAM_AUTOPOST_CHANNEL; // [SECURE_VARIABLE]
+  if (!channel) {
+    await ctx.reply('❌ TELEGRAM_AUTOPOST_CHANNEL не задан в .env');
+    return;
+  }
+  
+  try {
+    await TelegramClientManager.runAction(async (client) => {
+      await client.sendMessage(channel, { message: draft.text, linkPreview: false });
+    });
+    cacheService.removeDraft(draftId);
+    await ctx.reply(`✅ Пост (ID: ${draftId}) успешно опубликован!`);
+  } catch (err) {
+    await ctx.reply(`❌ Ошибка публикации: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+  }
+});
+
+autopostingComposer.callbackQuery('basket_publish_all', async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  const cacheService = new ResearchCacheService();
+  const drafts = cacheService.getAllDrafts();
+  
+  if (!drafts.length) {
+    await ctx.reply('🧺 Корзина постов пуста.');
+    return;
+  }
+  
+  const channel = process.env.TELEGRAM_AUTOPOST_CHANNEL; // [SECURE_VARIABLE]
+  if (!channel) {
+    await ctx.reply('❌ TELEGRAM_AUTOPOST_CHANNEL не задан в .env');
+    return;
+  }
+  
+  const loading = await ctx.reply('⏳ Публикация постов...');
+  try {
+    await TelegramClientManager.runAction(async (client) => {
+      for (const draft of drafts) {
+        await client.sendMessage(channel, { message: draft.text, linkPreview: false });
+        cacheService.removeDraft(draft.id);
+        await new Promise(r => setTimeout(r, 1000)); // небольшая задержка
+      }
+    });
+    await ctx.api.editMessageText(loading.chat.id, loading.message_id, `✅ Все посты (${drafts.length}) успешно опубликованы!`);
+  } catch (err) {
+    await ctx.api.editMessageText(loading.chat.id, loading.message_id, `❌ Ошибка публикации: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+  }
+});
+
+autopostingComposer.callbackQuery(/^basket_delete:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  const cacheService = new ResearchCacheService();
+  cacheService.removeDraft(ctx.match[1]);
+  await ctx.reply('✅ Черновик удален из корзины.');
 });
 
 autopostingComposer.callbackQuery('autoposting_back', async (ctx) => {
@@ -564,17 +690,5 @@ autopostingComposer.on('message:text', async (ctx, next) => {
     return;
   }
 
-  if (ctx.session?.autopostingStep !== 'pastPosts') return next();
-  const state = ensureAutopostingSession(ctx);
-  const parts = ctx.message.text
-    .split(/\n-{3,}\n|\n\n(?=#|\d+\.|•|-)/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .slice(0, 5);
-
-  state.pastPosts = parts.length ? parts : [ctx.message.text.trim()];
-  ctx.session.autopostingStep = null;
-  await ctx.reply(`Сохранил samples прошлых постов: ${state.pastPosts.length}.`, {
-    reply_markup: buildAutopostingKeyboard(state.pendingDraft),
-  });
+  return next();
 });

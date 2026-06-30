@@ -6,6 +6,7 @@ import {authComposer} from './composers/auth.mjs'
 import {settingsComposer} from './composers/settings.mjs'
 import {autopostingComposer} from './composers/autoposting.mjs'
 import { TelegramSessionService } from './services/telegramSessionService.mjs';
+import { loadUserSettings } from './db/userSettingsService.mjs';
 
 // import {aiSignalComposer} from './composers/aiSignalComposer.mjs'
 
@@ -39,6 +40,29 @@ export function createBot(token) {
   bot.use(session({
     initial: () => ({ /* ... ваши поля */ }),
   }));
+
+  // Загружаем настройки из БД при первом обращении в рамках сессии
+  bot.use(async (ctx, next) => {
+    if (ctx.from?.id && !ctx.session.settingsLoaded) {
+      const settings = await loadUserSettings(ctx.from.id);
+      if (settings) {
+        ctx.session.isDisableFiltr = settings.is_disable_filtr;
+        ctx.session.signalSettings = {
+          sellSpreadPct: Number(settings.sell_spread_pct),
+          maxEntryChg24Pct: Number(settings.max_entry_chg24_pct),
+          holdSkipUsd: Number(settings.hold_skip_usd),
+        };
+        ctx.session.tokenDiscoveryFilters = {
+          liquidityUsd: settings.filter_liquidity_usd.map(Number),
+          holders: settings.filter_holders.map(Number),
+          volume24h: settings.filter_volume24h.map(Number),
+          ageMinutes: settings.filter_age_minutes.map(Number),
+        };
+      }
+      ctx.session.settingsLoaded = true;
+    }
+    await next();
+  });
 
   bot.use(async (ctx, next) => {
     if (ctx.message?.text === '/start') {

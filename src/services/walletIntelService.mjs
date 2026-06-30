@@ -220,8 +220,9 @@ export class WalletIntelService {
       if (onStatusUpdate) await onStatusUpdate(`🕵️ Wallet Intel: ${token.symbol || shortAddress(token.address)}…`);
       const walletIntel = await this.analyzeToken(token, onStatusUpdate);
       analyzed.push({ ...token, walletIntel });
+      console.log(token.walletIntel.fundingCluster);
     }
-    console.log(analyzed);
+    
 
     return analyzed;
   }
@@ -237,6 +238,7 @@ export class WalletIntelService {
       }
       return await this.analyzeSolanaToken(token, onStatusUpdate);
     } catch (err) {
+      console.error(`⛔ analyzeToken error for ${token.symbol || shortAddress(token.address)}:`, err.message);
       if (onStatusUpdate) await onStatusUpdate(`⚠️ Wallet Intel ${token.symbol || shortAddress(token.address)}: ${err.message}`);
       return fallbackIntel(`wallet intelligence unavailable: ${err.message}`);
     }
@@ -282,13 +284,20 @@ export class WalletIntelService {
       analyzedWallets: Math.min(holderRows.length, this.maxHolderWallets),
     };
 
-    const holderWallets = [];
-    for (const row of holderRows.slice(0, this.maxHolderWallets)) {
-      const owner = await this.getTokenAccountOwner(row.tokenAccount);
-      if (!owner) continue;
-      const walletIntel = await this.analyzeSolanaWallet(owner, row.tokenAccount);
-      holderWallets.push({ ...row, ...walletIntel, wallet: owner });
-    }
+    const holderWalletsData = await Promise.all(
+      holderRows.slice(0, this.maxHolderWallets).map(async (row) => {
+        try {
+          const owner = await this.getTokenAccountOwner(row.tokenAccount);
+          if (!owner) return null;
+          const walletIntel = await this.analyzeSolanaWallet(owner, row.tokenAccount);
+          return { ...row, ...walletIntel, wallet: owner };
+        } catch (err) {
+          console.warn(`⚠️ Error analyzing holder ${shortAddress(row.tokenAccount)}:`, err.message);
+          return null;
+        }
+      })
+    );
+    const holderWallets = holderWalletsData.filter(Boolean);
 
     //классификация
     const behavior = classifyTokenBehavior(token);

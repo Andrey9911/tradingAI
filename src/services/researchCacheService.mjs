@@ -2,6 +2,10 @@ import { createClient } from '@supabase/supabase-js';
 
 const DEFAULT_TTL_MINUTES = Number(process.env.RESEARCH_CACHE_TTL_MINUTES || 180);
 const cacheRows = [];
+
+// === Drafts Basket (In-Memory) — корзина черновиков постов, живёт в рамках текущего процесса ===
+const draftsBasket = new Map();
+
 const status = {
   running: false,
   lastRunAt: null,
@@ -22,6 +26,35 @@ function nowIso() {
 }
 
 export class ResearchCacheService {
+  // === Drafts Basket CRUD ===
+
+  /** Добавляет пост-черновик в In-Memory корзину */
+  addDraft(id, text) {
+    const draft = { id, text, createdAt: new Date().toISOString() };
+    draftsBasket.set(id, draft);
+    return draft;
+  }
+
+  /** Возвращает все черновики из корзины в виде массива */
+  getAllDrafts() {
+    return [...draftsBasket.values()];
+  }
+
+  /** Получает один черновик по ID */
+  getDraft(id) {
+    return draftsBasket.get(id) || null;
+  }
+
+  /** Удаляет черновик по ID, возвращает true если удалён */
+  removeDraft(id) {
+    return draftsBasket.delete(id);
+  }
+
+  /** Очищает всю корзину черновиков */
+  clearDrafts() {
+    draftsBasket.clear();
+  }
+
   prune() {
     const now = Date.now();
     for (let i = cacheRows.length - 1; i >= 0; i -= 1) {

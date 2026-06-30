@@ -6,9 +6,9 @@ import { supabase } from '../db/supabaseClient.mjs';
 let researchWorkerTimer = null;
 
 const EXTENDED_TRIGGERS = [
-  "поддержк", "сопротивлени", "tvl", "листинг", "объем", "ath", 
+  "поддержка", "сопротивление", "tvl", "листинг", "объем", "ath","отскок","проторговка","откуп", 
   "пробой", "график", "лонг", "шорт", "long", "short", "buy", "sell",
-  "анализ", "фундаментал", "разлок", "airdrop", "pump", "dump", "кит", "ликвидность"
+  "анализ", "разлок", "pump", "dump", "кит", "ликвидность"
 ];
 
 function hasTokenMention(text) {
@@ -273,9 +273,31 @@ export async function fetchCryptoNewsForAutoposting() {
     throw new Error(`Supabase error: ${error.message}`);
   }
 
-  return (data || []).map(row => ({
-    date: row.published_at ? row.published_at.split('T')[0] : null,
-    text: row.content || ''
-  }));
+  // Шаг обогащения: получаем данные стиля из post_analysis_vectors
+  let styleContext = null;
+  try {
+    const { data: vectors } = await supabase
+      .from('post_analysis_vectors')
+      .select('raw_style_description, raw_opinion_text')
+      .order('created_at', { ascending: false })
+      .limit(5);
+    
+    if (vectors && vectors.length > 0) {
+      styleContext = {
+        styleDescriptions: vectors.map(v => v.raw_style_description).filter(Boolean),
+        opinionTexts: vectors.map(v => v.raw_opinion_text).filter(Boolean),
+      };
+    }
+  } catch (err) {
+    console.error('Ошибка получения style vectors:', err.message);
+  }
+
+  return {
+    news: (data || []).map(row => ({
+      date: row.published_at ? row.published_at.split('T')[0] : null,
+      text: row.content || ''
+    })),
+    styleContext,
+  };
 }
 

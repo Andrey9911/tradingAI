@@ -86,8 +86,9 @@ function toFixedSafe(value, digits = 1) {
 
 function compactReason(reason) {
   const value = String(reason || '').trim();
-  if (value.length <= 120) return value;
-  return `${value.slice(0, 117)}…`;
+  // if (value.length <= 120) return value;
+  // return `${value.slice(0, 117)}…`;
+  return value;
 }
 
 export async function runWeb3Discovery(ctx) {
@@ -148,7 +149,6 @@ export async function runWeb3Discovery(ctx) {
     await updateStatus(`🕵️ Запускаю Wallet Intelligence для top-${analyzed.length}…`);
     const enriched = await walletIntel.analyzeTopTokens(analyzed, updateStatus);
 
-    const keyboard = new InlineKeyboard();
     let text = `<b>🧠 Web3 Intelligence: top-${enriched.length}</b>\n`;
     text += `<i>Источники: Pump.fun, DexScreener, GeckoTerminal. Это AI-отчёт для ручного решения, не авто-торговля.</i>\n\n`;
     if (researchContext.length) {
@@ -156,27 +156,52 @@ export async function runWeb3Discovery(ctx) {
     }
     text += `<b>Фильтры</b>: liquidityUsd &gt; ${filters.liquidityUsd}, holders &gt; ${filters.holders}, volume24h &gt; ${filters.volume24h}, ageMinutes &gt; ${filters.ageMinutes}\n\n`;
 
+    let chunks = [];
+    let currentChunkText = text;
+    let currentKeyboard = new InlineKeyboard();
+
     enriched.forEach((token, index) => {
       const url = tokenUrl(token);
       const name = escapeHtml(token.symbol || shortAddress(token.address));
-      text += `<b>${index + 1}. ${name}</b> ${verdictTag(token.ai.verdict)} | risk ${riskTag(token.ai.riskLevel)}\n`;
-      text += `<code>${escapeHtml(token.chain)}</code> ${escapeHtml(shortAddress(token.address))} | MC ${formatUsd(token.marketCap)} | Liq ${formatUsd(token.liquidityUsd)} | Vol ${formatUsd(token.volume24h)}\n`;
-      text += `Holders/tx ${token.holders}/${token.buys24h + token.sells24h} | B/S ${token.buys24h}/${token.sells24h} | Age ${Math.round(token.ageMinutes)}m\n`;
-      text += `<i>${escapeHtml(compactReason(token.ai.reason))}</i>\n`;
-      text += formatWalletIntel(token.walletIntel);
-      text += '\n';
+      
+      let tokenText = `🔹 <b>${index + 1}. ${name}</b> | <code>${escapeHtml(token.chain)}</code>\n`;
+      tokenText += `<b>Verdict:</b> ${verdictTag(token.ai.verdict)} | <b>Risk:</b> ${riskTag(token.ai.riskLevel)}\n`;
+      tokenText += `🔗 <code>${escapeHtml(shortAddress(token.address))}</code>\n`;
+      tokenText += `💰 <b>MC:</b> ${formatUsd(token.marketCap)} | 💧 <b>Liq:</b> ${formatUsd(token.liquidityUsd)} | 📊 <b>Vol:</b> ${formatUsd(token.volume24h)}\n`;
+      tokenText += `👥 <b>Holders:</b> ${token.holders} | 📈 <b>B/S:</b> ${token.buys24h}/${token.sells24h} | ⏱ <b>Age:</b> ${Math.round(token.ageMinutes)}m\n`;
+      tokenText += `🧠 <i>${escapeHtml(compactReason(token.ai.reason))}</i>\n`;
+      tokenText += `<blockquote>${formatWalletIntel(token.walletIntel).trim()}</blockquote>\n\n`;
 
+      if (currentChunkText.length + tokenText.length > 3900) {
+        chunks.push({ text: currentChunkText, keyboard: currentKeyboard });
+        currentChunkText = '';
+        currentKeyboard = new InlineKeyboard();
+      }
+
+      currentChunkText += tokenText;
       if (url) {
-        keyboard.url(`${index + 1}. ${token.symbol || shortAddress(token.address)}`, url).row();
+        currentKeyboard.url(`${index + 1}. ${token.symbol || shortAddress(token.address)}`, url).row();
       }
     });
-    keyboard.text('🔄 Обновить Web3 top-10', 'web3_refresh');
 
-    await ctx.api.editMessageText(loading.chat.id, loading.message_id, text, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-      reply_markup: keyboard,
-    });
+    currentKeyboard.text('🔄 Обновить Web3 top-10', 'web3_refresh');
+    chunks.push({ text: currentChunkText, keyboard: currentKeyboard });
+
+    for (let i = 0; i < chunks.length; i++) {
+      if (i === 0) {
+        await ctx.api.editMessageText(loading.chat.id, loading.message_id, chunks[i].text, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+          reply_markup: chunks[i].keyboard,
+        });
+      } else {
+        await ctx.reply(chunks[i].text, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+          reply_markup: chunks[i].keyboard,
+        });
+      }
+    }
   } catch (err) {
     console.error('runWeb3Discovery', err);
     await ctx.api.deleteMessage(loading.chat.id, loading.message_id).catch(() => { });

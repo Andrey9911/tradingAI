@@ -1,5 +1,6 @@
 import { Composer, InlineKeyboard } from 'grammy';
 import { getTokenDiscoveryFilters } from '../services/tokenDiscoveryService.mjs';
+import { saveUserSettingsFromSession } from '../db/userSettingsService.mjs';
 
 export const settingsComposer = new Composer();
 
@@ -90,6 +91,9 @@ settingsComposer.callbackQuery('settings_disable_filters', async (ctx) => {
     await ctx.answerCallbackQuery('Фильтры отключены').catch(() => { });
     ctx.session.isDisableFiltr = false;
   }
+  
+  await saveUserSettingsFromSession(ctx);
+
   await ctx.reply(`Фильтры ${ctx.session.isDisableFiltr ? 'отключены' : 'включены'}.`, { parse_mode: 'HTML' });
 });
 
@@ -130,6 +134,8 @@ settingsComposer.on('message:text', async (ctx, next) => {
     const tokenFilters = getTokenDiscoveryFilters(ctx);
     tokenFilters[field] = [min, max];
 
+    await saveUserSettingsFromSession(ctx);
+
     ctx.session.settingsStep = null;
     await ctx.reply(`✅ Диапазон успешно обновлен: <b>${min} — ${max}</b>`, { parse_mode: 'HTML' });
 
@@ -151,6 +157,8 @@ settingsComposer.on('message:text', async (ctx, next) => {
 
   const s = getSignalSettings(ctx);
   s[step] = value; // step тут равен 'sellSpreadPct' или 'maxEntryChg24Pct'
+
+  await saveUserSettingsFromSession(ctx);
 
   ctx.session.settingsStep = null;
   await ctx.reply(`✅ Значение обновлено: <b>${value}%</b>`, { parse_mode: 'HTML' });
