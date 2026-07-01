@@ -2,8 +2,10 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Архитектура Trading AI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Trading AI - Bubble Maps</title>
+    <!-- Telegram Web App SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
     <!-- Vis.js Library -->
@@ -19,8 +21,8 @@
 
     <main class="container">
         <header class="glass-panel">
-            <h1>Интерактивная архитектура <span>Trading AI</span></h1>
-            <p>Вы можете свободно перемещать блоки (drag&drop) и масштабировать схему для удобного анализа.</p>
+            <h1>Анализ кошельков: <span id="tokenSymbol">Токен</span></h1>
+            <p>Карта топ-холдеров и связей (размер зависит от %).</p>
         </header>
 
         <section class="visualizer glass-panel">
@@ -28,15 +30,17 @@
                 <button id="resetBtn" class="btn">Восстановить вид</button>
             </div>
             <div id="network"></div>
+            
+            <!-- Hover Widget -->
+            <div id="walletWidget" class="wallet-widget hidden">
+                <h3 id="widgetRole" class="widget-role">Holder</h3>
+                <p><strong>Адрес:</strong> <span id="widgetAddress">...</span></p>
+                <p><strong>Доля:</strong> <span id="widgetPct">0</span>%</p>
+                <p><strong>Источник:</strong> <span id="widgetFunding">...</span></p>
+            </div>
         </section>
-        
-        <footer class="glass-panel text-center">
-            <p>Спроектировано для визуализации логики проекта Trading AI Ecosystem</p>
-        </footer>
     </main>
 
-    <!-- Schema Data -->
-    <script src="schema.js"></script>
     <!-- Initialization -->
     <script src="script.js"></script>
 </body>

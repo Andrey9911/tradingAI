@@ -220,21 +220,29 @@ autopostingComposer.callbackQuery('autoposting_generate', async (ctx) => {
   try {
     const diffText = await collectGitDiff();
     const service = new AutopostingService();
-    state.pendingDraft = await service.createDraft({
+    const draft = await service.createDraft({
       diffText,
       pastPosts: state.pastPosts,
       idea: state.idea,
     });
 
+    const softShillPart = draft.soft_shill ? `\n\n${draft.soft_shill}` : '';
+    const fullText = `${draft.telegramText}${softShillPart}`;
+    const draftId = `draft_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    
+    ctx.session ??= {};
+    ctx.session.autoposting ??= {};
+    ctx.session.autoposting.lastGeneratedPost = { id: draftId, text: fullText };
+    
     await ctx.api.editMessageText(
       loading.chat.id,
       loading.message_id,
-      formatDraftForTelegram(state.pendingDraft),
-      {
+      `<b>Сгенерированный пост (Обновление по коду):</b>\n\n${escapeHtml(fullText)}\n\n<i>${escapeHtml(draft.uniquenessNotes || '')}</i>`,
+      { 
         parse_mode: 'HTML',
         disable_web_page_preview: true,
-        reply_markup: buildAutopostingKeyboard(state.pendingDraft),
-      },
+        reply_markup: new InlineKeyboard().text('📥 Добавить в черновики', `draft_add:${draftId}`)
+      }
     );
   } catch (err) {
     await ctx.api.editMessageText(

@@ -93,20 +93,24 @@ function parseSystemFunding(tx, wallet) {
   const balancesBefore = tx?.meta?.preBalances || [];
   const balancesAfter = tx?.meta?.postBalances || [];
   const accountKeys = tx?.transaction?.message?.accountKeys || [];
-  const targetIndex = accountKeys.findIndex(key => compactAddress(key.pubkey || key) === target);
+  const targetIndex = accountKeys.findIndex(key => {
+    const pubkey = typeof key === 'string' ? key : (key.pubkey?.toString?.() || String(key.pubkey || key));
+    return compactAddress(pubkey) === target;
+  });
   if (targetIndex < 0 || !Number.isFinite(balancesBefore[targetIndex]) || !Number.isFinite(balancesAfter[targetIndex])) return '';
   if (balancesAfter[targetIndex] <= balancesBefore[targetIndex]) return '';
 
   let source = '';
   let largestDebit = 0;
   accountKeys.forEach((key, index) => {
+    const pubkey = typeof key === 'string' ? key : (key.pubkey?.toString?.() || String(key.pubkey || key));
     const before = balancesBefore[index];
     const after = balancesAfter[index];
     if (!Number.isFinite(before) || !Number.isFinite(after)) return;
     const debit = before - after;
     if (debit > largestDebit) {
       largestDebit = debit;
-      source = compactAddress(key.pubkey || key);
+      source = compactAddress(pubkey);
     }
   });
   return source === target ? '' : source;
@@ -220,9 +224,9 @@ export class WalletIntelService {
       if (onStatusUpdate) await onStatusUpdate(`🕵️ Wallet Intel: ${token.symbol || shortAddress(token.address)}…`);
       const walletIntel = await this.analyzeToken(token, onStatusUpdate);
       analyzed.push({ ...token, walletIntel });
-      console.log(token.walletIntel.fundingCluster);
+      console.log('walletIntel', walletIntel);
     }
-    
+
 
     return analyzed;
   }
@@ -290,6 +294,9 @@ export class WalletIntelService {
           const owner = await this.getTokenAccountOwner(row.tokenAccount);
           if (!owner) return null;
           const walletIntel = await this.analyzeSolanaWallet(owner, row.tokenAccount);
+          console.log('walletIntel', walletIntel);
+          console.log('owner', owner);
+
           return { ...row, ...walletIntel, wallet: owner };
         } catch (err) {
           console.warn(`⚠️ Error analyzing holder ${shortAddress(row.tokenAccount)}:`, err.message);
@@ -304,10 +311,16 @@ export class WalletIntelService {
     const highSupplyWallets = holderWallets.filter(wallet => wallet.pct >= HIGH_SUPPLY_SHARE);
     const devWallet = firstString(token.devWallet, holderWallets[0]?.wallet);
     const relatedWallets = unique([devWallet, ...highSupplyWallets.map(wallet => wallet.wallet)]);
-    const [devWalletIntel, relatedHistories] = await Promise.all([
-      devWallet ? this.analyzeSolanaWallet(devWallet) : Promise.resolve(null),
-      Promise.all(relatedWallets.map(wallet => this.fetchDevWalletHistory(wallet))),
-    ]);
+    let devWalletIntel = null;
+    if (devWallet) {
+      const existingHolder = holderWallets.find(w => w.wallet === devWallet);
+      if (existingHolder) {
+        devWalletIntel = existingHolder;
+      } else {
+        devWalletIntel = await this.analyzeSolanaWallet(devWallet);
+      }
+    }
+    const relatedHistories = await Promise.all(relatedWallets.map(wallet => this.fetchDevWalletHistory(wallet)));
     const fundingCluster = detectFundingCluster({ highSupplyWallets, behavior, token });
     const transferPattern = classifyTransferPattern({ highSupplyWallets, holderDistribution, behavior });
     const tokenCreatedAtSec = Date.now() / 1000 - toNumber(token.ageMinutes, 0) * 60;
@@ -326,6 +339,9 @@ export class WalletIntelService {
       holderDistribution,
       sniperBehavior,
       behavior,
+      walletAgeDays,
+      connectedWallets,
+      transferPattern,
     });
 
     let aiPattern = null;
@@ -339,6 +355,29 @@ export class WalletIntelService {
       }
     } catch (err) {
       console.error('AI Raw Txn error:', err.message);
+    }
+
+    //создание графов зависимостей
+    const graphNodes = [];
+    if (devWalletIntel) {
+      graphNodes.push({
+        address: devWalletIntel.wallet,
+        shortAddress: shortAddress(devWalletIntel.wallet),
+        pct: devWalletIntel.pct || 0,
+        fundingSource: devWalletIntel.fundingSource ? shortAddress(devWalletIntel.fundingSource) : '',
+        role: 'developer',
+      });
+    }
+    
+    for (const hw of holderWallets) {
+      if (devWalletIntel && hw.wallet === devWalletIntel.wallet) continue;
+      graphNodes.push({
+        address: hw.wallet,
+        shortAddress: shortAddress(hw.wallet),
+        pct: hw.pct || 0,
+        fundingSource: hw.fundingSource ? shortAddress(hw.fundingSource) : '',
+        role: hw.enteredTokenAtSec && tokenCreatedAtSec && (hw.enteredTokenAtSec - tokenCreatedAtSec <= 180) ? 'sniper' : 'holder',
+      });
     }
 
     return {
@@ -366,6 +405,7 @@ export class WalletIntelService {
         transferPattern,
       }),
       aiPattern,
+      graphNodes,
     };
   }
 
@@ -395,9 +435,9 @@ export class WalletIntelService {
   }
 
   async getTokenAccountOwner(tokenAccount) {
-    const result = await this.solanaRpc('getParsedAccountInfo', [
+    const result = await this.solanaRpc('getAccountInfo', [
       tokenAccount,
-      { commitment: 'confirmed' },
+      { commitment: 'confirmed', encoding: 'jsonParsed' },
     ]);
     return firstString(result?.value?.data?.parsed?.info?.owner);
   }
@@ -411,11 +451,12 @@ export class WalletIntelService {
   }
 
   async getParsedTransaction(signature) {
-    return await this.solanaRpc('getParsedTransaction', [
+    return await this.solanaRpc('getTransaction', [
       signature,
       {
         commitment: 'confirmed',
         maxSupportedTransactionVersion: 0,
+        encoding: 'jsonParsed',
       },
     ]);
   }
@@ -496,7 +537,7 @@ export class WalletIntelService {
       .reduce((sum, group) => sum + group.length, 0);
   }
 
-  classifyRisk({ fundingCluster, previousRugpulls, holderDistribution, sniperBehavior, behavior }) {
+  classifyRisk({ fundingCluster, previousRugpulls, holderDistribution, sniperBehavior, behavior, walletAgeDays, connectedWallets, transferPattern }) {
     let score = 0;
     if (fundingCluster.isClustered) score += 3;
     if (previousRugpulls > 0) score += Math.min(previousRugpulls, 3);
@@ -504,6 +545,12 @@ export class WalletIntelService {
     if (holderDistribution.top5Pct >= 45) score += 2;
     if (sniperBehavior === 'STRONG') score += 2;
     if (behavior === 'sell_pressure') score += 1;
+    
+    if (walletAgeDays !== null && walletAgeDays <= 7) score += 1;
+    if (connectedWallets >= 3) score += 1;
+    if (transferPattern === 'whale_concentrated') score += 1;
+    if (transferPattern === 'clustered_sells') score += 2;
+
     if (score >= 5) return 'HIGH';
     if (score >= 2) return 'MEDIUM';
     return 'LOW';

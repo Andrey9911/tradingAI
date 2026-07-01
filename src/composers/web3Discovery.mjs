@@ -125,14 +125,16 @@ export async function runWeb3Discovery(ctx) {
       return;
     }
 
-    await updateStatus(`✅ Top-${tokens.length} найден. Запускаю AI-анализ…`);
-    const analyzed = [];
+    await updateStatus(`✅ Top-${tokens.length} найден. Запускаю Wallet Intelligence…`);
+    const onchainTokens = await walletIntel.analyzeTopTokens(tokens, updateStatus);
+
+    const enriched = [];
     const researchContext = getRecentResearchData({ hours: 3, limit: 5 });
     if (researchContext.length) {
       await updateStatus(`📊 Подключаю short-term research context: ${researchContext.length} item(s).`);
     }
 
-    for (const token of tokens) {
+    for (const token of onchainTokens) {
       await updateStatus(`🤖 AI анализирует ${token.symbol || shortAddress(token.address)}…`);
       const relevantResearch = researchContext.filter((item) => {
         const haystack = `${item.summary || ''} ${(item.signals || []).join(' ')} ${(item.tokens || []).join(' ')}`.toLowerCase();
@@ -143,11 +145,8 @@ export async function runWeb3Discovery(ctx) {
       const aiResult = await ai.evaluateDiscoveredToken(token, updateStatus, relevantResearch.length ? relevantResearch : researchContext.slice(0, 2));
       console.log(aiResult);
 
-      analyzed.push({ ...token, ai: aiResult });
+      enriched.push({ ...token, ai: aiResult });
     }
-
-    await updateStatus(`🕵️ Запускаю Wallet Intelligence для top-${analyzed.length}…`);
-    const enriched = await walletIntel.analyzeTopTokens(analyzed, updateStatus);
 
     let text = `<b>🧠 Web3 Intelligence: top-${enriched.length}</b>\n`;
     text += `<i>Источники: Pump.fun, DexScreener, GeckoTerminal. Это AI-отчёт для ручного решения, не авто-торговля.</i>\n\n`;
@@ -179,9 +178,16 @@ export async function runWeb3Discovery(ctx) {
       }
 
       currentChunkText += tokenText;
+      
+      const graphNodes = token.walletIntel?.graphNodes || [];
+      const payload = Buffer.from(JSON.stringify(graphNodes)).toString('base64');
+      const webAppUrl = `https://example.ngrok-free.app/Схема/index.html?data=${encodeURIComponent(payload)}&symbol=${encodeURIComponent(token.symbol || 'Token')}`;
+
+      currentKeyboard.webApp(`📊 Анализ кошельков ${name}`, webAppUrl);
       if (url) {
-        currentKeyboard.url(`${index + 1}. ${token.symbol || shortAddress(token.address)}`, url).row();
+        currentKeyboard.url(`🔗 Торговать ${name}`, url);
       }
+      currentKeyboard.row();
     });
 
     currentKeyboard.text('🔄 Обновить Web3 top-10', 'web3_refresh');

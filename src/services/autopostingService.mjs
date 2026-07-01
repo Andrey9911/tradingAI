@@ -208,89 +208,47 @@ export class AutopostingService {
 
   async createDraft({ diffText = '', changedFiles = [], pastPosts = [], idea = '' } = {}) {
     const cfg = { ...this.config.telegram };
-    let client = await TelegramClientManager.runWithSession(cfg.session,{apiId: cfg.apiId, apiHash: cfg.apiHash});
-    await client.connect();
-    pastPosts = client.getMessages(cfg.channel,{ limit: 10 }).map(msg => ({
-      id: msg.id,
-      text: msg.message || '',
-      date: msg.date,
-      stats: {
-        views: msg.views || 0,
-        forwards: msg.forwards || 0,
-        reactions: msg.reactions ? msg.reactions.results.reduce((acc, r) => acc + r.count, 0) : 0
-      },
-      hasMedia: !!msg.media,
-      url: `https://t.me/${channelUsername.replace('@', '')}/${msg.id}`
-    }));
-    await client.disconnect();
+    
+    if (cfg.enabled && cfg.channel && cfg.apiId && cfg.apiHash) {
+      try {
+        const fetchedPosts = await TelegramClientManager.runWithSession(cfg.session, async (client) => {
+          const messages = await client.getMessages(cfg.channel, { limit: 10 });
+          const channelUsername = cfg.channel.replace('@', '');
+          return messages.map(msg => ({
+            id: msg.id,
+            text: msg.message || '',
+            date: msg.date,
+            stats: {
+              views: msg.views || 0,
+              forwards: msg.forwards || 0,
+              reactions: msg.reactions ? msg.reactions.results.reduce((acc, r) => acc + r.count, 0) : 0
+            },
+            hasMedia: !!msg.media,
+            url: `https://t.me/${channelUsername}/${msg.id}`
+          }));
+        }, { apiId: cfg.apiId, apiHash: cfg.apiHash });
+        
+        if (fetchedPosts && fetchedPosts.length > 0) {
+          pastPosts = fetchedPosts;
+        }
+      } catch (err) {
+        console.error('Ошибка при загрузке pastPosts из Telegram:', err.message);
+      }
+    }
 
     const diffSummary = await this.collectCodeChanges({ diffText, changedFiles });
     const fallback = buildFallbackDraft({ diffSummary, pastPosts, idea });
-    const prompt = `Ты SMM-агент Trading AI. По изменениям в push/code diff подготовь посты, но НЕ публикуй их.
-
-Требования:
-- русский язык;
-- стиль должен учитывать прошлые посты и не копировать их дословно;
-- проверь уникальность новости: если изменение похоже на прошлые посты, укажи это в uniquenessNotes;
-- Telegram: короткий пост для канала;
-- Habr: markdown draft для ручной публикации, технический стиль;
-- Dzen: HTML body для RSS;
-- никаких обещаний автотрейдинга, только AI-отчеты/сигналы и ручное решение;
-- верни только JSON: {"title":"","telegramText":"","habrMarkdown":"","dzenHtml":"","uniquenessNotes":""}
-
-Идея/контекст пользователя:
-${normalizeText(idea, 'нет')}
-
-Изменения:
-${JSON.stringify(diffSummary, null, 2)}
-
-Фрагмент diff:
-${diffSummary.rawDiff}
-
-Прошлые посты для стиля:
-${extractStyleSamples(pastPosts) || 'нет'}`;
-
     try {
-      const raw = typeof this.ai.createAutopostingDraft === 'function'
-        ? await this.ai.createAutopostingDraft({
-            diffSummary,
-            diffText: diffSummary.rawDiff,
-            pastPosts,
-            idea,
-          })
-        : (await this.ai.chatWithModelFallback({
-            messages: [{ role: 'user', content: prompt }],
-            max_tokens: 1800,
-            temperature: 0.55,
-          }))?.choices?.[0]?.message?.content || '';
-      return {
-        id: createPendingId(),
-        status: 'pending_approval',
-        createdAt: new Date().toISOString(),
-        platforms: this.config.defaultPlatforms,
+      const draft = await this.ai.createAutopostingDraft({
         diffSummary,
-        draft: normalizeAiDraft(raw, fallback),
-        approval: {
-          required: true,
-          approvedAt: null,
-          approvedBy: null,
-        },
-      };
+        diffText: diffSummary.rawDiff,
+        pastPosts,
+        idea,
+      });
+      return draft;
     } catch (err) {
-      return {
-        id: createPendingId(),
-        status: 'pending_approval',
-        createdAt: new Date().toISOString(),
-        platforms: this.config.defaultPlatforms,
-        diffSummary,
-        draft: fallback,
-        approval: {
-          required: true,
-          approvedAt: null,
-          approvedBy: null,
-        },
-        warning: `AI draft fallback used: ${err.message}`,
-      };
+      console.error('AI draft generation failed, using fallback:', err.message);
+      return fallback;
     }
   }
 

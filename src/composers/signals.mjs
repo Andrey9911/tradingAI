@@ -57,7 +57,7 @@ export function computeRsi(closes, period = 14) {
  * @param {string} timeframe - Таймфрейм свечей (по умолчанию '4h')
  * @param {number} limit - Количество свечей
  */
-export async function getTechnicalAnalysis(ticker, timeframe = '4h', limit = 100) {
+export async function getTechnicalAnalysis(ticker, timeframe = '4h', limit = 200) {
   try {
     const exchange = new ccxt.bybit();
     const baseTicker = ticker.toUpperCase().replace(/USDT$/, '');

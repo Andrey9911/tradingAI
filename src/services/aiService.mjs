@@ -74,9 +74,9 @@ const aiResponseSchema = z.object({
 
 export class AIService {
   constructor() {
-    this.apiUrl = process.env.FIREWORKAI_URL; // 'https://openrouter.ai/api/v1/chat/completions';
-    this.apiKey = process.env.FIREWORKAI_KEY; // process.env.OPENROUTER_API_KEY;
-    this.models = ['accounts/fireworks/models/glm-5p2']; // parseModelsFromEnv() ?? [...OPENROUTER_FREE_MODELS];
+    this.apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+    this.apiKey = process.env.OPENROUTER_API_KEY;
+    this.models = parseModelsFromEnv() ?? [...OPENROUTER_FREE_MODELS];
     this.generatedPostsCache = {}; // In-Memory Cache для сгенерированных постов
   }
 
@@ -349,9 +349,40 @@ ${rawText.slice(0, 12000)}
         .join('\n\n')
         .slice(0, 5000)
       : 'нет свежего short-term research context';
+
+    // On-chain wallet intelligence (from walletIntel.analyzeTopTokens)
+    const wi = token.walletIntel || {};
+    const distribution = wi.holderDistribution || {};
+    const cluster = wi.fundingCluster || {};
+    const onchainBlock = token.walletIntel ? JSON.stringify({
+      riskLevel: wi.riskLevel,
+      walletAgeDays: wi.walletAgeDays,
+      firstFundingSource: wi.firstFundingSource,
+      connectedWallets: wi.connectedWallets,
+      previousTokens: wi.previousTokens,
+      previousRugpulls: wi.previousRugpulls,
+      sniperBehavior: wi.sniperBehavior,
+      transferPattern: wi.transferPattern,
+      devWallet: wi.devWallet,
+      holderDistribution: {
+        topHolderPct: distribution.topHolderPct,
+        top5Pct: distribution.top5Pct,
+        highSupplyWallets: distribution.highSupplyWallets,
+        analyzedWallets: distribution.analyzedWallets,
+      },
+      fundingCluster: {
+        isClustered: cluster.isClustered,
+        source: cluster.source,
+        walletsCount: (cluster.wallets || []).length,
+        reason: cluster.reason,
+      },
+      aiPattern: wi.aiPattern || null,
+      summary: wi.summary,
+    }, null, 2) : 'нет on-chain данных (неподдерживаемая сеть)';
+
     const prompt = `Ты профессиональный Web3-аналитик мемкоинов и новых DEX-пулов. Торговля НЕ автоматическая: нужен сигнал для ручного решения.
 
-Данные токена:
+CEX/DEX метрики токена:
 ${JSON.stringify({
       chain: token.chain,
       address: token.address,
@@ -369,19 +400,36 @@ ${JSON.stringify({
       source: token.source,
     }, null, 2)}
 
+On-chain Wallet Intelligence:
+${onchainBlock}
+
 Свежий research context из Telegram-каналов:
 ${researchText}
 
-Проанализируй smart money/whale/dev-wallet признаки по доступным метрикам, rugpull-риск, ликвидность, buy/sell pressure, возраст и социальный/launch контекст по источнику и short-term research context.
-Ответь СТРОГО одной строкой JSON без markdown: {"verdict":"BUY"|"WAIT"|"AVOID","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"кратко по-русски, 1-2 предложения"}`;
+ИНСТРУКЦИЯ ПО АНАЛИЗУ:
+1. CEX-метрики: оцени ликвидность, buy/sell pressure, возраст пула, объём.
+2. On-chain данные (если есть):
+   - riskLevel: агрегированный on-chain риск (HIGH/MEDIUM/LOW)
+   - holderDistribution: topHolderPct > 20% или top5Pct > 45% — концентрация китов
+   - fundingCluster.isClustered: true — координированное финансирование (rug pull паттерн)
+   - sniperBehavior: STRONG — присутствие снайперов при запуске
+   - transferPattern: whale_concentrated / clustered_sells — опасные паттерны
+   - previousRugpulls > 0: разработчик уже имеет rug pull историю
+   - walletAgeDays <= 7: свежие кошельки = повышенный риск
+   - connectedWallets >= 3: сеть связанных кошельков
+   - aiPattern: паттерн из AI-анализа сырых транзакций (Rug Pull, Whale Accumulation, etc.)
+3. Research context: учти свежие инсайты из Telegram-каналов.
 
+Весомость: on-chain данные ВАЖНЕЕ CEX-метрик. Если on-chain показывает funding cluster + rug history + sniper — это AVOID даже при хороших CEX-метриках.
+
+Ответь СТРОГО одной строкой JSON без markdown: {"verdict":"BUY"|"WAIT"|"AVOID","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"кратко по-русски, 1-2 предложения, обязательно упомяни ключевые on-chain факторы"}`;
 
     try {
       const data = await this.chatWithModelFallback({
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 22000,
         temperature: 0.45,
-      });
+      }, onStatusUpdate);
       const raw = data?.choices?.[0]?.message?.content?.trim() || '';
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
@@ -436,18 +484,22 @@ SL в сигнале: ${ctx.hasSl ? 'да' : 'нет'}
 
   /** Генерирует черновик поста для автопостинга в Telegram и другие платформы на основе diff-изменений. */
   async createAutopostingDraft(context) {
+  
     const { diffSummary, diffText, pastPosts = [], idea = '' } = context;
-    const prompt = `Ты SMM-агент Trading AI. Подготовь автопостинг draft по изменениям в коде, но НЕ публикуй его.
+    const prompt = `Ты — девушка Катя - криптоаналитик, разработчик и автор инсайдерского Telegram-канала Trading AI.
+Твоя задача: проанализировать изменения в коде (diff) и написать короткий, интригующий пост об обновлениях проекта.
 
-Задача:
-- собрать понятную новость из push/code diff;
-- сравнить с прошлыми постами, чтобы не повторять стиль и смысл дословно;
-- сделать Telegram post, Habr markdown draft и Dzen HTML body;
-- сохранить позиционирование проекта: AI-отчеты и сигналы для ручного решения, не автотрейдинг;
-- вернуть только JSON без markdown.
+Правила стиля для поста:
+1. Краткость и динамика: Пиши емко, без воды. Используй короткие абзацы (1-3 предложения).
+2. Интрига: Зацепи внимание с первого предложения. Делай акцент на том, какую пользу принесут эти изменения.
+3. Эмодзи: Органично используй релевантные эмодзи.
+4. Тон: Уверенный, аналитический, местами тонко-юморной, местами ироничный. Используй сленг разработчиков и криптанов.
+5. Не обещай автотрейдинг, только AI-отчеты и сигналы для ручного принятия решений.
 
-Формат:
-{"title":"","telegramText":"","habrMarkdown":"","dzenHtml":"","uniquenessNotes":""}
+Интеграция (Soft Shill):
+Сформируй отдельный текст для нативной, "холодной" интеграции нашего закрытого продукта.
+Контекст: Проект \`tradingAI\` — приватный Telegram-бот для автоматизации (Bybit, TON), парсинга каналов и обработки сигналов с помощью ИИ.
+Намекни, что благодаря этим изменениям бот стал еще умнее или быстрее реагировать на рынок.
 
 Идея пользователя:
 ${String(idea || 'нет').slice(0, 2000)}
@@ -458,15 +510,33 @@ ${JSON.stringify(diffSummary, null, 2)}
 Diff:
 ${String(diffText || '').slice(0, 14000)}
 
-Прошлые посты:
-${pastPosts.map((post, index) => `${index + 1}. ${String(post).slice(0, 700)}`).join('\n\n') || 'нет'}`;
+Прошлые посты для сохранения уникальности:
+${pastPosts.map((post, index) => `${index + 1}. ${String(post).slice(0, 700)}`).join('\n\n') || 'нет'}
+
+Верни ответ СТРОГО в JSON формате. Схема JSON:
+{
+  "title": "Заголовок для других платформ",
+  "telegramText": "Основной текст поста для Telegram (интригующая выжимка с эмодзи)",
+  "habrMarkdown": "Markdown draft для Habr",
+  "dzenHtml": "HTML body для Dzen",
+  "uniquenessNotes": "Заметки об уникальности (отличие от прошлых постов)",
+  "soft_shill": "Текст холодной интеграции (1-2 предложения)"
+}`;
 
     const data = await this.chatWithModelFallback({
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1800,
-      temperature: 0.55,
+      messages: [{ role: 'system', content: prompt }],
+      max_tokens: 3000,
+      temperature: 0.6,
+      response_format: { type: 'json_object' }
     });
-    return data?.choices?.[0]?.message?.content?.trim() || '';
+    
+    const raw = data?.choices?.[0]?.message?.content?.trim() || '';
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('ИИ не вернул структурированный JSON ответ для autoposting draft.');
+    }
+    
+    return JSON.parse(jsonMatch[0]);
   }
 
   /** Суммаризирует свежие посты из Telegram-каналов, извлекая важные инсайты по токенам и рискам. */
@@ -551,15 +621,28 @@ ${JSON.stringify(transactions).slice(0, 15000)}
       }, onStatusUpdate);
 
       const raw = data?.choices?.[0]?.message?.content?.trim() || '';
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      // Извлекаем JSON: ленивая регулярка берёт первый валидный {...} блок
+      const jsonMatch = raw.match(/\{[\s\S]*?\}/);
       if (!jsonMatch) {
         return { pattern: 'Unknown', riskLevel: 'MEDIUM', reason: 'Не удалось разобрать ответ ИИ.' };
       }
-      console.log(jsonMatch);
 
-      return JSON.parse(jsonMatch[0]);
+      // Очистка типичных артефактов LLM: «умные» кавычки, trailing commas, markdown
+      const sanitized = jsonMatch[0]
+        .replace(/[\u201C\u201D\u201E\u00AB\u00BB]/g, '"')  // «» "" → "
+        .replace(/[\u2018\u2019]/g, "'")                      // '' → '
+        .replace(/,\s*([\]}])/g, '$1')                        // trailing commas
+        .replace(/```json\s*/gi, '')                           // markdown fence
+        .replace(/```\s*/g, '');
+
+      try {
+        return JSON.parse(sanitized);
+      } catch {
+        console.warn('analyzeRawTransactions: невалидный JSON от LLM, raw:', jsonMatch[0]);
+        return { pattern: 'Unknown', riskLevel: 'MEDIUM', reason: 'Ответ ИИ не является валидным JSON.' };
+      }
     } catch (err) {
-      console.error('analyzeRawTransactions error:', err);
+      console.error('analyzeRawTransactions error:', err.message);
       return { pattern: 'Error', riskLevel: 'HIGH', reason: 'Ошибка анализа транзакций нейросетью.' };
     }
   }
