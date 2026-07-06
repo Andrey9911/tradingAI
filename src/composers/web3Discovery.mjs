@@ -179,9 +179,9 @@ export async function runWeb3Discovery(ctx) {
 
       currentChunkText += tokenText;
       
-      const graphNodes = token.walletIntel?.graphNodes || [];
-      const payload = Buffer.from(JSON.stringify(graphNodes)).toString('base64');
-      const webAppUrl = `https://example.ngrok-free.app/Схема/index.html?data=${encodeURIComponent(payload)}&symbol=${encodeURIComponent(token.symbol || 'Token')}`;
+      const knowledgeGraph = token.walletIntel?.knowledgeGraph || { nodes: [], edges: [] };
+      const payload = Buffer.from(JSON.stringify(knowledgeGraph)).toString('base64');
+      const webAppUrl = `https://bottelegram-poll.amvera.io/index.html?data=${encodeURIComponent(payload)}&symbol=${encodeURIComponent(token.symbol || 'Token')}`;
 
       currentKeyboard.webApp(`📊 Анализ кошельков ${name}`, webAppUrl);
       if (url) {

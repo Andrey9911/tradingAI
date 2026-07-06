@@ -1,4 +1,5 @@
 import { RestClientV5 } from 'bybit-api';
+import ccxt from 'ccxt';
 
 export class BybitService {
   constructor(apiKey, apiSecret, testnet = false) {
@@ -758,3 +759,148 @@ export class BybitService {
   }
 }
 
+/**
+ * Определение "линии лежачей ликвидности" через книгу ордеров CEX.
+ * Выявляет кластеры значительных объемов среди покупателей (поддержка) и продавцов (сопротивление).
+ * @param {string} ticker - Тикер монеты (например, 'ENJ')
+ * @returns {Promise<Object|null>} - Найденные кластеры ликвидности или null, если нет данных
+ */
+export async function getLiquidityLine(ticker) {
+  try {
+    const exchange = new ccxt.bybit();
+    const baseTicker = ticker.toUpperCase().replace(/USDT$/, '');
+    const symbol = `${baseTicker}/USDT`;
+
+    // Загружаем рынки для проверки, существует ли пара
+    await exchange.loadMarkets();
+    if (!exchange.markets[symbol]) {
+      return null;
+    }
+
+    // Получаем стакан
+    const orderbook = await exchange.fetchOrderBook(symbol, 50);
+    if (!orderbook || (!orderbook.bids.length && !orderbook.asks.length)) {
+      return null;
+    }
+
+    // Получаем текущую цену (можно взять среднее между лучшим bid и ask)
+    const bestBid = orderbook.bids.length ? orderbook.bids[0][0] : null;
+    const bestAsk = orderbook.asks.length ? orderbook.asks[0][0] : null;
+    const currentPrice = bestBid && bestAsk ? (bestBid + bestAsk) / 2 : (bestBid || bestAsk);
+    
+    if (!currentPrice) return null;
+
+    // Вспомогательная функция для выявления кластеров
+    const findClusters = (levels, isBid) => {
+      if (!levels || !levels.length) return [];
+      
+      // Считаем объемы в USD для каждого уровня
+      const levelVolumes = levels.map(level => {
+        const [price, amount] = level;
+        return { price, amount, volumeUsd: price * amount };
+      });
+      
+      // Находим медианный объем
+      const sortedVolumes = [...levelVolumes].sort((a, b) => a.volumeUsd - b.volumeUsd);
+      const medianVolume = sortedVolumes[Math.floor(sortedVolumes.length / 2)].volumeUsd;
+      
+      // Порог значимости: в 3 раза больше медианы
+      const threshold = medianVolume * 3;
+      
+      const clusters = [];
+      let currentCluster = null;
+      
+      for (const level of levelVolumes) {
+        if (level.volumeUsd > threshold) {
+          if (!currentCluster) {
+            currentCluster = { 
+              priceSum: level.price * level.volumeUsd, 
+              volumeUsd: level.volumeUsd, 
+              levels: 1,
+              minPrice: level.price,
+              maxPrice: level.price
+            };
+          } else {
+            // Если уровни идут подряд или очень близко (например, в пределах 0.5%), объединяем
+            const priceDiffPct = Math.abs(level.price - currentCluster.minPrice) / currentCluster.minPrice * 100;
+            if (priceDiffPct < 0.5) {
+              currentCluster.priceSum += level.price * level.volumeUsd;
+              currentCluster.volumeUsd += level.volumeUsd;
+              currentCluster.levels += 1;
+              currentCluster.minPrice = Math.min(currentCluster.minPrice, level.price);
+              currentCluster.maxPrice = Math.max(currentCluster.maxPrice, level.price);
+            } else {
+              // Завершаем текущий кластер и начинаем новый
+              const avgPrice = currentCluster.priceSum / currentCluster.volumeUsd;
+              clusters.push({
+                price: avgPrice,
+                volumeUsd: currentCluster.volumeUsd,
+                levels: currentCluster.levels,
+                distancePct: ((avgPrice - currentPrice) / currentPrice) * 100
+              });
+              currentCluster = {
+                priceSum: level.price * level.volumeUsd, 
+                volumeUsd: level.volumeUsd, 
+                levels: 1,
+                minPrice: level.price,
+                maxPrice: level.price
+              };
+            }
+          }
+        } else {
+          // Уровень ниже порога, завершаем кластер если есть
+          if (currentCluster) {
+            const avgPrice = currentCluster.priceSum / currentCluster.volumeUsd;
+            clusters.push({
+              price: avgPrice,
+              volumeUsd: currentCluster.volumeUsd,
+              levels: currentCluster.levels,
+              distancePct: ((avgPrice - currentPrice) / currentPrice) * 100
+            });
+            currentCluster = null;
+          }
+        }
+      }
+      
+      // Добавляем последний кластер если остался
+      if (currentCluster) {
+        const avgPrice = currentCluster.priceSum / currentCluster.volumeUsd;
+        clusters.push({
+          price: avgPrice,
+          volumeUsd: currentCluster.volumeUsd,
+          levels: currentCluster.levels,
+          distancePct: ((avgPrice - currentPrice) / currentPrice) * 100
+        });
+      }
+      
+      return clusters;
+    };
+
+    const bidClusters = findClusters(orderbook.bids, true);
+    const askClusters = findClusters(orderbook.asks, false);
+    
+    // Считаем суммарные объемы стакана
+    const totalBidVolumeUsd = orderbook.bids.reduce((sum, level) => sum + level[0] * level[1], 0);
+    const totalAskVolumeUsd = orderbook.asks.reduce((sum, level) => sum + level[0] * level[1], 0);
+    const totalVolume = totalBidVolumeUsd + totalAskVolumeUsd;
+    
+    let bidAskImbalancePct = 0;
+    if (totalVolume > 0) {
+      bidAskImbalancePct = ((totalBidVolumeUsd - totalAskVolumeUsd) / totalVolume) * 100;
+    }
+
+    return {
+      symbol: symbol,
+      currentPrice: currentPrice,
+      bidClusters: bidClusters,
+      askClusters: askClusters,
+      totalBidVolumeUsd: totalBidVolumeUsd,
+      totalAskVolumeUsd: totalAskVolumeUsd,
+      bidAskImbalancePct: bidAskImbalancePct
+    };
+
+  } catch (err) {
+    console.warn(`Не удалось получить линию ликвидности для ${ticker}:`, err.message);
+    return null; // fallback
+  }
+}

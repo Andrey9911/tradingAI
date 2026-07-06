@@ -1,9 +1,10 @@
 import { TonService } from './tonService.mjs';
 import { AIService } from './aiService.mjs';
+import { getLiquidityLine } from './bybitService.mjs';
 
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.WALLET_INTEL_TIMEOUT_MS || '8000', 10);
 const DEFAULT_SOLANA_RPC_URL = `${process.env.SOLANA_RPC_URL}?api-key=${process.env.SOLANA_RPC_KEY}` || 'https://api.mainnet-beta.solana.com';
-const DEFAULT_MAX_HOLDER_WALLETS = parseInt(process.env.WALLET_INTEL_MAX_HOLDER_WALLETS || '6', 10);
+const DEFAULT_MAX_HOLDER_WALLETS = parseInt(process.env.WALLET_INTEL_MAX_HOLDER_WALLETS || '9', 10);
 const CLUSTER_TIME_WINDOW_MINUTES = parseFloat(process.env.WALLET_INTEL_CLUSTER_WINDOW_MINUTES || '3');
 const HIGH_SUPPLY_SHARE = parseFloat(process.env.WALLET_INTEL_HIGH_SUPPLY_SHARE || '5');
 const REALIZED_PROFIT_UNAVAILABLE = 'needs-indexer';
@@ -203,6 +204,140 @@ function fallbackIntel(reason) {
   };
 }
 
+/**
+ * @typedef {Object} GraphNode
+ * @property {string} address - Полный адрес (ID узла)
+ * @property {string} shortAddress - Сокращенный адрес для UI
+ * @property {string[]} roles - Массив ролей (например: ['developer', 'sniper', 'cluster', 'high_holder'])
+ * @property {number} pct - Процент владения (0 если нет)
+ * @property {string} [fundingSource] - Полный адрес источника финансирования (опционально)
+ * @property {number} [enteredTokenAtSec] - Время входа (Unix timestamp)
+ * @property {number} [walletAgeDays] - Возраст кошелька
+ */
+
+/**
+ * @typedef {Object} GraphEdge
+ * @property {string} source - Полный адрес отправителя / инициатора связи
+ * @property {string} target - Полный адрес получателя
+ * @property {string} type - Тип связи (строгий enum)
+ * @property {Object} [metadata] - Дополнительные данные (например, разница во времени)
+ */
+
+/**
+ * @typedef {Object} KnowledgeGraph
+ * @property {GraphNode[]} nodes
+ * @property {GraphEdge[]} edges
+ */
+
+/**
+ * Чистая функция для построения Knowledge Graph на основе данных кошельков.
+ * Выявляет кластеры, сети финансирования и снайперские паттерны.
+ * 
+ * @param {Object} params
+ * @param {Array} params.holderWallets
+ * @param {Object} [params.devWalletIntel]
+ * @param {number} [params.tokenCreatedAtSec]
+ * @returns {KnowledgeGraph}
+ */
+export function buildKnowledgeGraph({ holderWallets = [], devWalletIntel = null, tokenCreatedAtSec = null }) {
+  const nodesMap = new Map();
+
+  const addNode = (walletInfo, isDev = false) => {
+    if (!walletInfo || !walletInfo.wallet) return;
+    const address = walletInfo.wallet;
+
+    const existing = nodesMap.get(address) || {
+      address,
+      shortAddress: shortAddress(address),
+      roles: [],
+      pct: walletInfo.pct || 0,
+      fundingSource: walletInfo.fundingSource || undefined,
+      enteredTokenAtSec: walletInfo.enteredTokenAtSec,
+      walletAgeDays: walletInfo.walletAgeDays
+    };
+
+    if (isDev && !existing.roles.includes('developer')) {
+      existing.roles.push('developer');
+    }
+
+    if (walletInfo.enteredTokenAtSec && tokenCreatedAtSec && (walletInfo.enteredTokenAtSec - tokenCreatedAtSec <= 180)) {
+      if (!existing.roles.includes('sniper')) existing.roles.push('sniper');
+    }
+
+    if (existing.roles.length === 0) {
+      existing.roles.push('holder');
+    }
+
+    nodesMap.set(address, existing);
+  };
+
+  if (devWalletIntel) {
+    addNode(devWalletIntel, true);
+  }
+
+  for (const hw of holderWallets) {
+    addNode(hw, devWalletIntel && hw.wallet === devWalletIntel.wallet);
+  }
+
+  const nodes = Array.from(nodesMap.values());
+  const edges = [];
+
+  // Оптимизация: группировка по fundingSource
+  const fundingGroups = new Map();
+  for (const node of nodes) {
+    if (node.fundingSource) {
+      const group = fundingGroups.get(node.fundingSource) || [];
+      group.push(node);
+      fundingGroups.set(node.fundingSource, group);
+    }
+  }
+
+  // Генерация ребер (shared_funding_source, dev_transfer)
+  for (const [sourceAddr, targets] of fundingGroups.entries()) {
+    for (const targetNode of targets) {
+      // Связь от devWallet
+      if (devWalletIntel && sourceAddr === devWalletIntel.wallet && targetNode.address !== devWalletIntel.wallet) {
+        edges.push({
+          source: sourceAddr,
+          target: targetNode.address,
+          type: 'dev_transfer'
+        });
+      }
+      
+      // Общий источник финансирования
+      if (targetNode.address !== sourceAddr) {
+        edges.push({
+          source: sourceAddr,
+          target: targetNode.address,
+          type: 'shared_funding_source'
+        });
+      }
+    }
+  }
+
+  // Генерация ребер (synchronous_entry)
+  const timedNodes = nodes.filter(n => typeof n.enteredTokenAtSec === 'number')
+                          .sort((a, b) => a.enteredTokenAtSec - b.enteredTokenAtSec);
+
+  for (let i = 0; i < timedNodes.length; i++) {
+    for (let j = i + 1; j < timedNodes.length; j++) {
+      const diff = Math.abs(timedNodes[j].enteredTokenAtSec - timedNodes[i].enteredTokenAtSec);
+      if (diff <= 15) {
+        edges.push({
+          source: timedNodes[i].address,
+          target: timedNodes[j].address,
+          type: 'synchronous_entry',
+          metadata: { timeDifferenceSec: diff }
+        });
+      } else {
+        break; // Так как массив отсортирован, дальше разница будет только расти
+      }
+    }
+  }
+
+  return { nodes, edges };
+}
+
 export class WalletIntelService {
   constructor({
     timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -223,7 +358,18 @@ export class WalletIntelService {
     for (const token of tokens) {
       if (onStatusUpdate) await onStatusUpdate(`🕵️ Wallet Intel: ${token.symbol || shortAddress(token.address)}…`);
       const walletIntel = await this.analyzeToken(token, onStatusUpdate);
-      analyzed.push({ ...token, walletIntel });
+      
+      // Определение "линии лежачей ликвидности" через книгу ордеров CEX
+      let liquidityClusters = null;
+      try {
+        if (token.symbol) {
+          liquidityClusters = await getLiquidityLine(token.symbol);
+        }
+      } catch (err) {
+        console.warn(`⚠️ LiquidityLine for ${token.symbol}: ${err.message}`);
+      }
+
+      analyzed.push({ ...token, walletIntel, liquidityClusters });
       console.log('walletIntel', walletIntel);
     }
 
@@ -357,28 +503,12 @@ export class WalletIntelService {
       console.error('AI Raw Txn error:', err.message);
     }
 
-    //создание графов зависимостей
-    const graphNodes = [];
-    if (devWalletIntel) {
-      graphNodes.push({
-        address: devWalletIntel.wallet,
-        shortAddress: shortAddress(devWalletIntel.wallet),
-        pct: devWalletIntel.pct || 0,
-        fundingSource: devWalletIntel.fundingSource ? shortAddress(devWalletIntel.fundingSource) : '',
-        role: 'developer',
-      });
-    }
-    
-    for (const hw of holderWallets) {
-      if (devWalletIntel && hw.wallet === devWalletIntel.wallet) continue;
-      graphNodes.push({
-        address: hw.wallet,
-        shortAddress: shortAddress(hw.wallet),
-        pct: hw.pct || 0,
-        fundingSource: hw.fundingSource ? shortAddress(hw.fundingSource) : '',
-        role: hw.enteredTokenAtSec && tokenCreatedAtSec && (hw.enteredTokenAtSec - tokenCreatedAtSec <= 180) ? 'sniper' : 'holder',
-      });
-    }
+    //создание графов
+    const knowledgeGraph = buildKnowledgeGraph({
+      holderWallets,
+      devWalletIntel,
+      tokenCreatedAtSec
+    });
 
     return {
       walletAgeDays,
@@ -405,7 +535,7 @@ export class WalletIntelService {
         transferPattern,
       }),
       aiPattern,
-      graphNodes,
+      knowledgeGraph,
     };
   }
 

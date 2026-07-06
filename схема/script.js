@@ -11,24 +11,30 @@ document.addEventListener("DOMContentLoaded", function () {
     const tokenSymbol = urlParams.get('symbol') || 'Токен';
     document.getElementById('tokenSymbol').innerText = tokenSymbol;
 
-    let graphNodesData = [];
+    let graphData = { nodes: [], edges: [] };
     try {
         const payload = urlParams.get('data');
         if (payload) {
-            graphNodesData = JSON.parse(atob(payload));
+            graphData = JSON.parse(atob(payload));
         }
     } catch (e) {
         console.error("Failed to parse graph data:", e);
     }
 
     // Default mock data for testing if no URL params
-    if (graphNodesData.length === 0) {
-        graphNodesData = [
-            { address: 'dev123', shortAddress: 'dev...123', pct: 15, role: 'developer' },
-            { address: 'hold1', shortAddress: 'hld...1', pct: 8, fundingSource: 'dev123', role: 'holder' },
-            { address: 'snip1', shortAddress: 'snp...1', pct: 12, fundingSource: 'hold1', role: 'sniper' },
-            { address: 'hold2', shortAddress: 'hld...2', pct: 5, fundingSource: 'dev123', role: 'holder' },
-            { address: 'hold3', shortAddress: 'hld...3', pct: 3, fundingSource: 'hold2', role: 'holder' },
+    if (!graphData.nodes || graphData.nodes.length === 0) {
+        graphData.nodes = [
+            { address: 'dev123', shortAddress: 'dev...123', pct: 15, roles: ['developer'] },
+            { address: 'hold1', shortAddress: 'hld...1', pct: 8, fundingSource: 'dev123', roles: ['holder'] },
+            { address: 'snip1', shortAddress: 'snp...1', pct: 12, fundingSource: 'hold1', roles: ['sniper'] },
+            { address: 'hold2', shortAddress: 'hld...2', pct: 5, fundingSource: 'dev123', roles: ['holder'] },
+            { address: 'hold3', shortAddress: 'hld...3', pct: 3, fundingSource: 'hold2', roles: ['holder'] },
+        ];
+        graphData.edges = [
+            { source: 'dev123', target: 'hold1', type: 'dev_transfer' },
+            { source: 'dev123', target: 'hold2', type: 'dev_transfer' },
+            { source: 'hold1', target: 'snip1', type: 'shared_funding_source' },
+            { source: 'hold2', target: 'hold3', type: 'shared_funding_source' },
         ];
     }
 
@@ -44,9 +50,10 @@ document.addEventListener("DOMContentLoaded", function () {
     };
 
     // Calculate node size based on pct
-    graphNodesData.forEach((item, index) => {
+    graphData.nodes.forEach((item) => {
         const size = Math.max(15, Math.min(60, 15 + (item.pct * 2)));
-        const color = roleColors[item.role] || roleColors.holder;
+        const primaryRole = (item.roles && item.roles.length > 0) ? item.roles[0] : 'holder';
+        const color = roleColors[primaryRole] || roleColors.holder;
         
         nodes.push({
             id: item.address,
@@ -55,28 +62,34 @@ document.addEventListener("DOMContentLoaded", function () {
             size: size,
             color: color,
             font: { color: tg?.themeParams?.text_color || '#ffffff', size: 12, face: 'Inter' },
-            title: item.role.toUpperCase(), // basic tooltip
+            title: primaryRole.toUpperCase(), // basic tooltip
             // Store full data for widget
             customData: item
         });
         nodeMap.set(item.address, true);
     });
 
-    // Create edges based on fundingSource
-    graphNodesData.forEach(item => {
-        if (item.fundingSource && item.fundingSource !== 'unknown') {
-            // Find if source exists in our nodes
-            const sourceExists = nodeMap.has(item.fundingSource);
-            if (sourceExists && item.fundingSource !== item.address) {
+    // Add edges from backend
+    if (graphData.edges) {
+        graphData.edges.forEach(edge => {
+            if (nodeMap.has(edge.source) && nodeMap.has(edge.target)) {
+                let colorOptions = { color: 'rgba(255,255,255,0.2)', highlight: '#60a5fa' };
+                if (edge.type === 'synchronous_entry') {
+                    colorOptions = { color: 'rgba(239, 68, 68, 0.4)', highlight: '#ef4444' }; // red for sniper sync
+                } else if (edge.type === 'dev_transfer') {
+                    colorOptions = { color: 'rgba(139, 92, 246, 0.4)', highlight: '#8b5cf6' }; // purple for dev
+                }
+                
                 edges.push({
-                    from: item.fundingSource,
-                    to: item.address,
+                    from: edge.source,
+                    to: edge.target,
                     arrows: 'to',
-                    color: { color: 'rgba(255,255,255,0.2)', highlight: '#60a5fa' }
+                    color: colorOptions,
+                    title: edge.type // tooltip on hover
                 });
             }
-        }
-    });
+        });
+    }
 
     const container = document.getElementById('network');
     const data = {
@@ -117,8 +130,9 @@ document.addEventListener("DOMContentLoaded", function () {
             const nodeId = params.nodes[0];
             const nodeData = data.nodes.get(nodeId).customData;
             
-            wRole.innerText = nodeData.role.toUpperCase();
-            wRole.style.color = roleColors[nodeData.role]?.border || '#3b82f6';
+            const primaryRole = (nodeData.roles && nodeData.roles.length > 0) ? nodeData.roles[0] : 'holder';
+            wRole.innerText = primaryRole.toUpperCase();
+            wRole.style.color = roleColors[primaryRole]?.border || '#3b82f6';
             wAddr.innerText = nodeData.address;
             wPct.innerText = nodeData.pct.toFixed(2);
             wFund.innerText = nodeData.fundingSource || 'Нет';

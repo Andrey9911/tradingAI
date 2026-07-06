@@ -525,7 +525,7 @@ ${pastPosts.map((post, index) => `${index + 1}. ${String(post).slice(0, 700)}`).
 
     const data = await this.chatWithModelFallback({
       messages: [{ role: 'system', content: prompt }],
-      max_tokens: 3000,
+      max_tokens: 30000,
       temperature: 0.6,
       response_format: { type: 'json_object' }
     });

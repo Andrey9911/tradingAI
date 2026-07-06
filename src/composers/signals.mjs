@@ -1,5 +1,5 @@
 import { AuthService } from '../services/authService.mjs';
-import { BybitService } from '../services/bybitService.mjs';
+import { BybitService, getLiquidityLine } from '../services/bybitService.mjs';
 import { AIService } from '../services/aiService.mjs';
 import { InlineKeyboard } from 'grammy';
 import { getNewsSentiment } from '../services/searchNews/searchNews.mjs';
@@ -466,7 +466,8 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
       volume24h,
       deriv,
       newsSentiment,
-      technicalAnalysis
+      technicalAnalysis,
+      liquidityClusters
     ] = await Promise.all([
       bybit.getCurrentPrice(symbol),
       bybit.getKlineHourlyData(symbol, 30),
@@ -475,7 +476,8 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
       bybit.get24hVolume(symbol),
       bybit.getDerivativesContext(symbol),
       getNewsSentiment(baseTicker),
-      getTechnicalAnalysis(baseTicker, '4h')
+      getTechnicalAnalysis(baseTicker, '4h'),
+      getLiquidityLine(baseTicker)
     ]);
 
     const { closes, volumeSpike } = klineData;
@@ -514,6 +516,7 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
         volumeSpike,
       },
       technical_analysis: technicalAnalysis,
+      liquidityClusters: liquidityClusters,
       derivatives: deriv,
       news: newsSentiment,
       onchain: tokenData ? {
@@ -528,8 +531,10 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
 Собранные данные: ${JSON.stringify(aggregatedData)}
 
 В объекте "technical_analysis" находится готовая выжимка графика: тренд по средним (EMA), индикатор RSI, а также ближайшие локальные уровни поддержки и сопротивления.
-Твоя задача — синтезировать эту техническую картину с фундаментальными рисками (новости, on-chain метрики, фандинг). 
-Если техническая картина расходится с фундаментальной, укажи это как риск.
+В объекте "liquidityClusters" — кластеры крупной ликвидности из книги ордеров CEX (bid-кластеры = уровни поддержки, ask-кластеры = сопротивление). Обрати внимание на bid/ask imbalance и расстояние кластеров от текущей цены.
+Твоя задача — синтезировать эту техническую картину с фундаментальными рисками (новости, on-chain метрики, фандинг).
+
+В конце своего предложения давай совет, стоит ли открывать позицию long/short, 
 
 Дай вердикт (BUY/SELL/WAIT) и краткое обоснование (не более 1000 символов, на русском). Отвечай только валидным JSON: {"verdict": "VERDICT", "reason": "reason"}`;
     
@@ -537,7 +542,7 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
     try {
       const aiRaw = await ai.chatWithModelFallback({
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 15000,
+        max_tokens: 20000,
         temperature: 0.3
       }, updateStatus);
       

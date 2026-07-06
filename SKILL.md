@@ -495,5 +495,59 @@ SOL_PRICE_USD=180                     # используется Pump.fun для
 | Сравнение адресов без нормализации | `compactAddress()` / `normalizeTonAddress()` |
 | `encoding: 'base64'` для Solana | `encoding: 'jsonParsed'` |
 | `commitment: 'finalized'` для аналитики | `commitment: 'confirmed'` |
-| Один запрос блокирует все | `Promise.all()` для независимых запросов |
 | `any` в JSDoc | Конкретные `@typedef` / `@param` |
+
+---
+
+## 12. ИНТЕГРАЦИЯ CEX (CCXT + TECHNICALINDICATORS)
+
+### 12.1 Архитектура и изоляция
+- Логика работы с биржами (CEX) и вычисления индикаторов должна располагаться в слое сервисов, например `src/services/ExchangeService.mjs` или `src/services/ccxtService.mjs`.
+- **Запрещено** импортировать Telegram-контекст или `grammy` в этот сервис. Все данные возвращаются в виде структурированных объектов и форматируются на уровне Composer.
+
+### 12.2 Работа с CCXT
+- Использовать строгий ESM импорт: `import ccxt from 'ccxt';`.
+- Инициализация биржи должна происходить с передачей ключей и обязательным включением `enableRateLimit`:
+  ```js
+  const exchange = new ccxt.binance({
+    apiKey: process.env.BINANCE_API_KEY,    // [SECURE_VARIABLE]
+    secret: process.env.BINANCE_SECRET,     // [SECURE_VARIABLE]
+    enableRateLimit: true,
+  });
+  ```
+- Все вызовы API (например, `fetchOHLCV`) необходимо оборачивать в `try/catch`. При ошибке возвращать безопасный `fallback` объект, не допуская падения приложения. Ошибка логируется и, при необходимости, передается на уровень выше.
+
+### 12.3 Подготовка данных для `technicalindicators`
+- Метод `ccxt.fetchOHLCV` возвращает список свечей в формате: `[ timestamp, open, high, low, close, volume ]`.
+- Для `technicalindicators` необходимо извлекать отдельные массивы:
+  ```js
+  const ohlcv = await exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
+  const closePrices = ohlcv.map(candle => candle[4]);
+  const highPrices = ohlcv.map(candle => candle[2]);
+  const lowPrices = ohlcv.map(candle => candle[3]);
+  const volumes = ohlcv.map(candle => candle[5]);
+  ```
+
+### 12.4 Вычисление индикаторов и типизация (JSDoc)
+- Запрещено использовать тип `any`. Использовать JSDoc (`@typedef`, `@param`, `@returns`).
+- **Пример расчета RSI:**
+  ```js
+  import { RSI } from 'technicalindicators';
+
+  /**
+   * Вычисляет RSI на основе цен закрытия.
+   * @param {number[]} closePrices Массив цен закрытия.
+   * @param {number} period Период индикатора (по умолчанию 14).
+   * @returns {number[]} Массив значений RSI.
+   */
+  function calculateRSI(closePrices, period = 14) {
+    if (closePrices.length <= period) return [];
+    
+    return RSI.calculate({
+      values: closePrices,
+      period,
+    });
+  }
+  ```
+- Для комплексных индикаторов (например, MACD) результаты должны описываться через `@typedef`.
+
