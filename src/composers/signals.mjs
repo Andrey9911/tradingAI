@@ -419,6 +419,86 @@ function chunkHtmlMessage(html, maxLen) {
   return parts;
 }
 
+function shortAddress(address) {
+  if (!address) return '—';
+  if (address.length <= 12) return address;
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+function compactAddress(address) {
+  return address ? String(address).trim() : '';
+}
+
+async function getTopTrades(tokenData, priceUsd, timeoutMs = 8000) {
+  if (!tokenData || !tokenData.address) return [];
+  const chain = String(tokenData.chain || '').toLowerCase().trim();
+  const tokenAddress = tokenData.address;
+  
+  try {
+    if (chain === 'robinhood' || chain === 'robinhood-chain' || chain === 'rh-evm') {
+      const explorerApiUrl = process.env.EXPLORER_API_URL || 'https://robinhoodchain.blockscout.com/api';
+      const url = `${explorerApiUrl}?module=account&action=tokentx&contractaddress=${tokenAddress}&page=1&offset=100&sort=desc`;
+      const res = await fetch(url, { headers: { 'accept': 'application/json' } });
+      const json = await res.json();
+      const transfers = json?.result || [];
+      
+      const pairAddr = String(tokenData.pairAddress || '').toLowerCase();
+      const decimals = parseInt(tokenData.decimals || '18', 10);
+      
+      const mapped = transfers.map(tx => {
+        const fromAddr = String(tx.from || '').toLowerCase();
+        const toAddr = String(tx.to || '').toLowerCase();
+        const kind = (toAddr === pairAddr) ? 'sell' : 'buy';
+        const rawAmount = parseFloat(tx.value || '0');
+        const amount = rawAmount / (10 ** (parseInt(tx.tokenDecimal, 10) || decimals || 18));
+        const volumeUsd = amount * (priceUsd || parseFloat(tokenData.price) || 0);
+        
+        return {
+          kind,
+          volumeUsd,
+          amount
+        };
+      });
+      
+      return mapped
+        .filter(t => t.volumeUsd > 0)
+        .sort((a, b) => b.volumeUsd - a.volumeUsd)
+        .slice(0, 5);
+    } else {
+      const network = chain === 'sol' ? 'solana' : chain;
+      const url = `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${tokenAddress}/trades`;
+      const res = await fetch(url, {
+        headers: {
+          'accept': 'application/json;version=20230203'
+        }
+      });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const json = await res.json();
+      const trades = json?.data || [];
+      
+      const mapped = trades.map(t => {
+        const attrs = t.attributes || {};
+        const volumeUsd = parseFloat(attrs.volume_in_usd || '0');
+        const amount = parseFloat(attrs.from_token_amount || attrs.to_token_amount || '0');
+        const kind = attrs.kind || 'buy';
+        return {
+          kind,
+          volumeUsd,
+          amount
+        };
+      });
+      
+      return mapped
+        .filter(t => t.volumeUsd > 0)
+        .sort((a, b) => b.volumeUsd - a.volumeUsd)
+        .slice(0, 5);
+    }
+  } catch (err) {
+    console.warn(`⚠️ Error fetching top trades: ${err.message}`);
+    return [];
+  }
+}
+
 export async function runUserSignalAnalysis(ctx, ticker, description, direction = null) {
   let keys;
   try {
@@ -432,7 +512,7 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
     return;
   }
 
-  const loading = await ctx.reply(`⏳ Начинаю анализ сигнала по тикеру: <b>${escapeHtml(ticker)}</b>...`, { parse_mode: 'HTML' });
+  const loading = await ctx.reply(`⏳ Начинаю анализ сигнала по тикеру/адресу: <b>${escapeHtml(ticker)}</b>...`, { parse_mode: 'HTML' });
   let statusText = `🔍 <b>Анализирую сигнал по ${escapeHtml(ticker)}...</b>\n\n`;
 
   const updateStatus = async (newLine) => {
@@ -453,10 +533,29 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
     const bybit = new BybitService(keys.apiKey, keys.apiSecret);
     const ai = new AIService();
     
+    // Smart Input Resolver: detect if ticker is a contract address
+    const isAddress = /^0x[a-fA-F0-9]{40}$/.test(ticker.trim()) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(ticker.trim());
+    let resolvedTicker = ticker.trim();
+    let tokenData = null;
+    let searchResults = [];
+
+    const tokenDiscovery = new TokenDiscoveryService();
+    const walletIntel = new WalletIntelService();
+
+    if (isAddress) {
+      await updateStatus('🕵️ Обнаружен контракт-адрес. Запрашиваю информацию о токене на DEX...');
+      searchResults = await tokenDiscovery.fetchDexScreenerTokenByQuery(ticker, updateStatus);
+      tokenData = searchResults.find(t => t.address.toLowerCase() === ticker.toLowerCase()) || searchResults[0] || null;
+      if (tokenData && tokenData.symbol) {
+        resolvedTicker = tokenData.symbol;
+        await updateStatus(`✅ Контракт распознан как токен: <b>${escapeHtml(resolvedTicker)}</b>`);
+      }
+    }
+
     // 1. Быстрый сбор метрик Bybit и Технического анализа (ПАРАЛЛЕЛЬНО)
     await updateStatus('📊 Запрашиваю рыночные данные и вычисляю технический анализ...');
-    const symbol = ticker.toUpperCase().endsWith('USDT') ? ticker.toUpperCase() : `${ticker.toUpperCase()}USDT`;
-    const baseTicker = baseCoinFromSpotSymbol(symbol) || ticker;
+    const symbol = resolvedTicker.toUpperCase().endsWith('USDT') ? resolvedTicker.toUpperCase() : `${resolvedTicker.toUpperCase()}USDT`;
+    const baseTicker = baseCoinFromSpotSymbol(symbol) || resolvedTicker;
     
     const [
       currentPrice,
@@ -469,33 +568,38 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
       technicalAnalysis,
       liquidityClusters
     ] = await Promise.all([
-      bybit.getCurrentPrice(symbol),
-      bybit.getKlineHourlyData(symbol, 30),
-      bybit.getBidAskSpreadPct(symbol),
-      bybit.get24hChange(symbol),
-      bybit.get24hVolume(symbol),
-      bybit.getDerivativesContext(symbol),
-      getNewsSentiment(baseTicker),
-      getTechnicalAnalysis(baseTicker, '4h'),
-      getLiquidityLine(baseTicker)
+      bybit.getCurrentPrice(symbol).catch(() => null),
+      bybit.getKlineHourlyData(symbol, 30).catch(() => ({ closes: [], volumeSpike: 0 })),
+      bybit.getBidAskSpreadPct(symbol).catch(() => null),
+      bybit.get24hChange(symbol).catch(() => 0),
+      bybit.get24hVolume(symbol).catch(() => 0),
+      bybit.getDerivativesContext(symbol).catch(() => ({ fundingRate: null, oiChangePct: null, lsRatio: null })),
+      getNewsSentiment(baseTicker).catch(() => null),
+      getTechnicalAnalysis(baseTicker, '4h').catch(() => ({ error: 'Не удалось рассчитать ТА' })),
+      getLiquidityLine(baseTicker).catch(() => null)
     ]);
 
-    const { closes, volumeSpike } = klineData;
+    const { closes, volumeSpike } = klineData || { closes: [], volumeSpike: 0 };
     const rsi14 = computeRsi(closes, 14);
 
-    // 2. Token & Wallet Intelligence
-    await updateStatus('🕵️ Выполняю on-chain анализ токена...');
-    const tokenDiscovery = new TokenDiscoveryService();
-    const walletIntel = new WalletIntelService();
-    
-    // Ищем токен на DEX
-    const searchResults = await tokenDiscovery.fetchDexScreenerTokenByQuery(ticker, updateStatus);
-    const tokenData = searchResults.find(t => t.symbol.toUpperCase() === ticker.toUpperCase()) || null;
+    // 2. DEX Token & Wallet Intelligence
     let walletData = null;
+    let topTrades = [];
+
+    if (!isAddress) {
+      await updateStatus('🕵️ Выполняю DEX поиск токена...');
+      searchResults = await tokenDiscovery.fetchDexScreenerTokenByQuery(ticker, updateStatus);
+      tokenData = searchResults.find(t => t.symbol.toUpperCase() === ticker.toUpperCase()) || null;
+    }
 
     if (tokenData) {
       await updateStatus('🧠 Собираю on-chain данные о кошельках и кластерах...');
-      walletData = await walletIntel.analyzeToken(tokenData, updateStatus);
+      const [walletRes, tradesRes] = await Promise.all([
+        walletIntel.analyzeToken(tokenData, updateStatus).catch(() => null),
+        getTopTrades(tokenData, tokenData.price || currentPrice).catch(() => [])
+      ]);
+      walletData = walletRes;
+      topTrades = tradesRes;
     } else {
       await updateStatus('⚠️ Токен не найден в DEX сетях, продолжаем анализ с CEX данными.');
     }
@@ -504,7 +608,7 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
     await updateStatus('🤖 Формирую отчет с помощью нейросети...');
     
     const aggregatedData = {
-      ticker,
+      ticker: resolvedTicker,
       direction,
       description,
       market: {
@@ -521,7 +625,8 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
       news: newsSentiment,
       onchain: tokenData ? {
         token: tokenData,
-        wallets: walletData
+        wallets: walletData,
+        topRecentTrades: topTrades
       } : null
     };
 
@@ -556,34 +661,73 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
       aiResponse = { verdict: 'ERROR', reason: 'Ошибка при обращении к нейросети.' };
     }
 
-    let report = `<b>Анализ сигнала: ${escapeHtml(ticker)}</b> ${direction ? `[${escapeHtml(direction)}]` : ''}\n`;
-    report += `<i>Пользовательское описание: \n${escapeHtml(description)}</i>\n\n`;
-    
-    if (currentPrice) {
-      report += `<b>Рыночные данные:</b>\n`;
-      report += `Цена: ${currentPrice}\n`;
-      report += `Изм. 24ч: ${change24h.toFixed(2)}%\n`;
-      if (rsi14) report += `RSI(14): ${rsi14.toFixed(1)}\n`;
-      if (volumeSpike) report += `Volume Spike: ${volumeSpike.toFixed(2)}x\n`;
-      if (deriv.fundingRate != null) report += `Фандинг: ${deriv.fundingRate.toFixed(4)}%\n`;
-      if (deriv.oiChangePct != null) report += `OI Изм.: ${deriv.oiChangePct.toFixed(2)}%\n`;
-      report += `\n`;
+    // Форматирование Whale Tracker
+    const chain = String(tokenData?.chain || '').toLowerCase().trim();
+    let top5List = '';
+    if (topTrades && topTrades.length > 0) {
+      top5List = topTrades.map(t => {
+        const emoji = t.kind === 'buy' ? '🟢' : '🔴';
+        const typeStr = t.kind.toUpperCase();
+        const volumeStr = t.volumeUsd.toLocaleString('en-US', { maximumFractionDigits: 0 });
+        
+        if (chain === 'solana' || chain === 'sol') {
+          const solPrice = parseFloat(process.env.SOL_PRICE_USD || '180');
+          const solAmount = t.volumeUsd / solPrice;
+          return `${emoji} <b>${typeStr}:</b> $${volumeStr} (${solAmount.toFixed(2)} SOL)`;
+        } else if (chain === 'ton') {
+          const tonPrice = 7.5;
+          const tonAmount = t.volumeUsd / tonPrice;
+          return `${emoji} <b>${typeStr}:</b> $${volumeStr} (${tonAmount.toFixed(2)} TON)`;
+        } else if (chain === 'robinhood' || chain === 'robinhood-chain' || chain === 'rh-evm') {
+          const ethPrice = 3400;
+          const ethAmount = t.volumeUsd / ethPrice;
+          return `${emoji} <b>${typeStr}:</b> $${volumeStr} (${ethAmount.toFixed(3)} WETH)`;
+        }
+        return `${emoji} <b>${typeStr}:</b> $${volumeStr}`;
+      }).join('\n');
+    } else {
+      top5List = '<i>Транзакции не найдены</i>';
     }
 
+    let report = '';
+    const aiStatusEmoji = aiResponse.verdict === 'BUY' ? '🟢' : aiResponse.verdict === 'SELL' ? '🔴' : '🟡';
+    const aiStatusText = aiResponse.verdict;
+    const fullAiVerdictText = escapeHtml(aiResponse.reason);
+
     if (tokenData) {
-      report += `<b>On-chain данные (${escapeHtml(tokenData.chain)}):</b>\n`;
-      report += `Ликвидность: $${tokenData.liquidityUsd?.toFixed(0)}\n`;
-      report += `Возраст: ${Math.round(tokenData.ageMinutes || 0)} мин\n`;
-      if (walletData && walletData.riskLevel) {
-        report += `Риск: ${walletData.riskLevel}\n`;
-        report += `Паттерн: ${walletData.transferPattern}\n`;
+      const addressShort = shortAddress(tokenData.address);
+      const liquidityStr = tokenData.liquidityUsd ? tokenData.liquidityUsd.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '0';
+      const ageMin = Math.round(tokenData.ageMinutes || 0);
+      const riskLevel = walletData?.riskLevel || 'UNKNOWN';
+      const pattern = walletData?.transferPattern || 'UNKNOWN';
+      const chainStr = String(tokenData.chain || '').toUpperCase();
+
+      report = `<b>🤖 Анализ актива:</b> ${tokenData.symbol} / ${addressShort}\n`;
+      report += `<i>Пользовательское описание: ${escapeHtml(description)}</i>\n\n`;
+      report += `<b>📊 On-chain метрики (${chainStr}):</b>\n`;
+      report += `💧 <b>Ликвидность:</b> $${liquidityStr}\n`;
+      report += `⏳ <b>Возраст пула:</b> ${ageMin} мин\n`;
+      report += `⚠️ <b>Риск-профиль:</b> ${riskLevel} (LOW/MEDIUM/HIGH)\n`;
+      report += `🔄 <b>Паттерн:</b> ${pattern}\n\n`;
+      report += `<b>🐋 Топ-5 недавних транзакций:</b>\n${top5List}\n\n`;
+      report += `<b>🧠 Вердикт ИИ: ${aiStatusEmoji} ${aiStatusText}</b>\n`;
+      report += `<blockquote expandable>${fullAiVerdictText}</blockquote>`;
+    } else {
+      report = `<b>🤖 Анализ актива (CEX):</b> ${resolvedTicker.toUpperCase()}\n`;
+      report += `<i>Пользовательское описание: ${escapeHtml(description)}</i>\n\n`;
+      if (currentPrice) {
+        report += `<b>📊 Рыночные данные (Bybit):</b>\n`;
+        report += `💵 <b>Цена:</b> ${currentPrice}\n`;
+        report += `📈 <b>Изм. 24ч:</b> ${change24h.toFixed(2)}%\n`;
+        if (rsi14) report += `📉 <b>RSI(14):</b> ${rsi14.toFixed(1)}\n`;
+        if (volumeSpike) report += `🔊 <b>Volume Spike:</b> ${volumeSpike.toFixed(2)}x\n`;
+        if (deriv.fundingRate != null) report += `🪙 <b>Фандинг:</b> ${deriv.fundingRate.toFixed(4)}%\n`;
+        if (deriv.oiChangePct != null) report += `📊 <b>OI Изм.:</b> ${deriv.oiChangePct.toFixed(2)}%\n`;
+        report += `\n`;
       }
-      report += `\n`;
+      report += `<b>🧠 Вердикт ИИ: ${aiStatusEmoji} ${aiStatusText}</b>\n`;
+      report += `<blockquote expandable>${fullAiVerdictText}</blockquote>`;
     }
-    
-    const vTag = aiResponse.verdict === 'BUY' ? '🟢 BUY' : aiResponse.verdict === 'SELL' ? '🔴 SELL' : '🟡 ' + aiResponse.verdict;
-    report += `<b>Вердикт ИИ:</b> ${vTag}\n`;
-    report += `<i>${escapeHtml(aiResponse.reason)}</i>`;
 
     await ctx.api.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
     await ctx.reply(report, { parse_mode: 'HTML' });

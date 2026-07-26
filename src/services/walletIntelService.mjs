@@ -55,7 +55,7 @@ function tokenAmount(row) {
   return toNumber(row.uiAmount ?? row.uiAmountString ?? row.amount, 0);
 }
 
-async function fetchJson(url, { timeoutMs = DEFAULT_TIMEOUT_MS, method = 'GET', body = null } = {}) {
+async function fetchJson(url, { timeoutMs = DEFAULT_TIMEOUT_MS, method = 'GET', body = null, headers = {} } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -65,6 +65,7 @@ async function fetchJson(url, { timeoutMs = DEFAULT_TIMEOUT_MS, method = 'GET', 
         accept: 'application/json',
         'content-type': 'application/json',
         'user-agent': 'tradingai-wallet-intel/1.0',
+        ...headers,
       },
       body: body ? JSON.stringify(body) : null,
       signal: controller.signal,
@@ -115,6 +116,63 @@ function parseSystemFunding(tx, wallet) {
     }
   });
   return source === target ? '' : source;
+}
+
+function decimalToNumber(rawValue, decimals = 18) {
+  try {
+    if (!rawValue) return 0;
+    const raw = BigInt(rawValue);
+    const scale = 10n ** BigInt(Math.max(0, decimals));
+    const integer = raw / scale;
+    const fraction = raw % scale;
+    return Number(integer) + Number(fraction) / Number(scale);
+  } catch {
+    return Number(rawValue || 0) / (10 ** decimals);
+  }
+}
+
+async function getContractDeployer(contractAddress, explorerApiUrl, apiKey = '') {
+  if (!contractAddress || !explorerApiUrl) return '';
+  try {
+    const apiKeyParam = apiKey ? `&apikey=${apiKey}` : '';
+    const url = `${explorerApiUrl}?module=account&action=txlist&address=${contractAddress}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc${apiKeyParam}`;
+    const data = await fetchJson(url);
+    if (data?.status === '1' && Array.isArray(data?.result) && data?.result.length > 0) {
+      return data.result[0].from || '';
+    }
+  } catch (err) {
+    console.warn(`⚠️ Error getting contract deployer for ${contractAddress}:`, err.message);
+  }
+  return '';
+}
+
+async function getFundingSource(wallet, explorerApiUrl, apiKey = '') {
+  if (!wallet || !explorerApiUrl) {
+    return { fundingSource: '', fundedAtSec: null, walletAgeDays: null };
+  }
+  try {
+    const apiKeyParam = apiKey ? `&apikey=${apiKey}` : '';
+    const url = `${explorerApiUrl}?module=account&action=txlist&address=${wallet}&startblock=0&endblock=99999999&page=1&offset=10&sort=asc${apiKeyParam}`;
+    const data = await fetchJson(url);
+    if (data?.status === '1' && Array.isArray(data?.result)) {
+      const firstTx = data.result.find(tx => 
+        tx.to && tx.to.toLowerCase() === wallet.toLowerCase() && 
+        tx.from && tx.from.toLowerCase() !== wallet.toLowerCase() &&
+        tx.isError !== '1'
+      );
+      if (firstTx) {
+        const timeStamp = parseInt(firstTx.timeStamp, 10);
+        return {
+          fundingSource: firstTx.from,
+          fundedAtSec: timeStamp,
+          walletAgeDays: daysSince(timeStamp)
+        };
+      }
+    }
+  } catch (err) {
+    console.warn(`⚠️ Error getting funding source for wallet ${wallet}:`, err.message);
+  }
+  return { fundingSource: '', fundedAtSec: null, walletAgeDays: null };
 }
 
 function classifyTokenBehavior(token) {
@@ -383,6 +441,9 @@ export class WalletIntelService {
       if (chain === 'ton') {
         return await this.tonService.analyzeTonToken(token, onStatusUpdate);
       }
+      if (chain === 'robinhood' || chain === 'robinhood-chain' || chain === 'rh-evm') {
+        return await this.analyzeRobinhoodEvmToken(token, onStatusUpdate);
+      }
       if (chain !== 'solana' && chain !== 'sol') {
         return this.analyzeUnsupportedChain(token);
       }
@@ -406,6 +467,315 @@ export class WalletIntelService {
       sniperBehavior: toNumber(token.ageMinutes, 0) <= 15 ? 'POSSIBLE' : 'NONE',
       transferPattern,
       riskLevel: behavior === 'sell_pressure' ? 'MEDIUM' : 'UNKNOWN',
+    };
+  }
+
+  /**
+   * Анализирует ERC-20 токен на Robinhood Chain (EVM / WETH пулы).
+   * Собирает метрики из трех источников (DexScreener/Gecko, Bitquery, Moralis & Explorer) в параллельном режиме.
+   * 
+   * @param {Object} token
+   * @param {Function} [onStatusUpdate]
+   * @returns {Promise<Object>}
+   * 
+  
+   */
+  async analyzeRobinhoodEvmToken(token, onStatusUpdate = null) {
+    const tokenAddress = compactAddress(token.address || token.tokenAddress);
+    if (!tokenAddress) return fallbackIntel('EVM token address missing');
+
+    const explorerApiUrl = process.env.EXPLORER_API_URL || 'https://robinhoodchain.blockscout.com/api';
+    const explorerApiKey = process.env.EXPLORER_API_KEY || process.env.ARBISCAN_API_KEY || ''; // [SECURE_VARIABLE]
+    const moralisApiKey = process.env.MORALIS_API_KEY || process.env.MORALIS_KEY || ''; // [SECURE_VARIABLE]
+    const bitqueryApiKey = process.env.BITQUERY_API_KEY || process.env.BITQUERY_KEY || ''; // [SECURE_VARIABLE]
+
+    if (onStatusUpdate) await onStatusUpdate(`🕵️ Robinhood Intel: Начало анализа токена ${shortAddress(tokenAddress)}...`);
+
+    // Параллельный сбор данных из 3 блоков
+    const [block1Res, block2Res, block3Res] = await Promise.all([
+      // Блок 1: Базовая информация о пуле (DexScreener + Moralis Metadata)
+      (async () => {
+        try {
+          if (onStatusUpdate) await onStatusUpdate('🕵️ Robinhood Intel [1/3]: Получение информации о пуле (DexScreener)...');
+          const dexscreenerUrl = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
+          const dexscreenerData = await fetchJson(dexscreenerUrl, { timeoutMs: this.timeoutMs });
+          const pairs = dexscreenerData?.pairs || [];
+          
+          // Ищем пулы на базе Arbitrum/Robinhood, где quoteToken.symbol = 'WETH'
+          const pair = pairs.find(p => 
+            (String(p.chainId).toLowerCase() === 'arbitrum' || String(p.chainId).toLowerCase() === 'robinhood') && 
+            p.quoteToken?.symbol === 'WETH'
+          ) || pairs[0];
+
+          if (!pair) {
+            throw new Error('No pairs found on DexScreener');
+          }
+
+          const liquidityUsd = toNumber(pair.liquidity?.usd, 0);
+          if (liquidityUsd < 1000) {
+            throw new Error(`Low liquidity ($${liquidityUsd.toFixed(0)} < $1,000)`);
+          }
+
+          let decimals = 18;
+          let totalSupply = 0;
+
+          if (moralisApiKey) {
+            try {
+              const metadataUrl = `https://deep-index.moralis.io/api/v2.2/erc20/metadata?addresses%5B%5D=${tokenAddress}&chain=robinhood`;
+              const metadataResponse = await fetchJson(metadataUrl, {
+                timeoutMs: this.timeoutMs,
+                headers: { 'X-API-Key': moralisApiKey }
+              });
+              const metadata = metadataResponse?.[0] || {};
+              decimals = parseInt(metadata.decimals || '18', 10);
+              totalSupply = toNumber(metadata.total_supply_formatted || (metadata.total_supply ? decimalToNumber(metadata.total_supply, decimals) : 0), 0);
+            } catch (err) {
+              console.warn(`⚠️ Error fetching Moralis metadata: ${err.message}`);
+            }
+          }
+
+          // Fallback to Blockscout v2 REST API for token decimals/supply
+          if (totalSupply === 0) {
+            try {
+              const blockscoutTokenUrl = `https://robinhoodchain.blockscout.com/api/v2/tokens/${tokenAddress}`;
+              const blockscoutTokenResponse = await fetchJson(blockscoutTokenUrl, { timeoutMs: this.timeoutMs });
+              if (blockscoutTokenResponse) {
+                decimals = parseInt(blockscoutTokenResponse.decimals || '18', 10);
+                totalSupply = toNumber(blockscoutTokenResponse.total_supply, 0) / (10 ** decimals);
+              }
+            } catch (err) {
+              console.warn(`⚠️ Error fetching Blockscout token metadata: ${err.message}`);
+            }
+          }
+
+          return {
+            pair,
+            decimals,
+            totalSupply,
+            priceUsd: toNumber(pair.priceUsd, 0),
+            volume24h: toNumber(pair.volume?.h24, 0),
+            priceChange24h: toNumber(pair.priceChange?.h24, 0),
+            buys24h: toNumber(pair.txns?.h24?.buys, 0),
+            sells24h: toNumber(pair.txns?.h24?.sells, 0),
+            poolCreatedAtSec: pair.pairCreatedAt ? Math.round(pair.pairCreatedAt / 1000) : null
+          };
+        } catch (err) {
+          console.warn(`⚠️ Robinhood Block 1 Error: ${err.message}`);
+          throw err; // Блок 1 критичен, если пулов нет или ликвидность низкая
+        }
+      })(),
+
+      // Блок 2: История сделок и снайперы (GeckoTerminal API -> Fallback to Blockscout tokentx)
+      (async () => {
+        const earliestBuyTimeByWallet = new Map();
+        try {
+          if (onStatusUpdate) await onStatusUpdate('🕵️ Robinhood Intel [2/3]: Запрос истории торгов (GeckoTerminal)...');
+          const geckoUrl = `https://api.geckoterminal.com/api/v2/networks/robinhood/tokens/${tokenAddress}/trades`;
+          
+          try {
+            const response = await fetchJson(geckoUrl, { timeoutMs: this.timeoutMs });
+            const trades = response?.data || [];
+            for (let i = trades.length - 1; i >= 0; i -= 1) {
+              const trade = trades[i];
+              const attributes = trade?.attributes || {};
+              const kind = attributes.kind;
+              const wallet = compactAddress(attributes.tx_from_address);
+              const timestampStr = attributes.block_timestamp;
+              if (kind === 'buy' && wallet && timestampStr) {
+                const timeSec = Math.round(new Date(timestampStr).getTime() / 1000);
+                const walletLower = wallet.toLowerCase();
+                if (!earliestBuyTimeByWallet.has(walletLower)) {
+                  earliestBuyTimeByWallet.set(walletLower, timeSec);
+                }
+              }
+            }
+          } catch (geckoErr) {
+            console.warn(`⚠️ GeckoTerminal trades failed (${geckoErr.message}), falling back to Blockscout tokentx...`);
+            
+            const tokentxUrl = `${explorerApiUrl}?module=account&action=tokentx&contractaddress=${tokenAddress}&page=1&offset=100&sort=asc`;
+            const tokentxResponse = await fetchJson(tokentxUrl, { timeoutMs: this.timeoutMs });
+            const transfers = tokentxResponse?.result || [];
+            for (const tx of transfers) {
+              const toAddress = compactAddress(tx.to);
+              const timeSec = parseInt(tx.timeStamp, 10);
+              if (toAddress && Number.isFinite(timeSec)) {
+                const walletLower = toAddress.toLowerCase();
+                if (!earliestBuyTimeByWallet.has(walletLower)) {
+                  earliestBuyTimeByWallet.set(walletLower, timeSec);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`⚠️ Robinhood Block 2 Error: ${err.message}`);
+        }
+        return { earliestBuyTimeByWallet };
+      })(),
+
+      // Блок 3: Холдеры и графы связей (Moralis API / Explorer API)
+      (async () => {
+        try {
+          if (onStatusUpdate) await onStatusUpdate('🕵️ Robinhood Intel [3/3]: Получение холдеров (Moralis)...');
+          let owners = [];
+          
+          if (moralisApiKey) {
+            try {
+              const url = `https://deep-index.moralis.io/api/v2.2/erc20/${tokenAddress}/owners?chain=robinhood&limit=20`;
+              const data = await fetchJson(url, {
+                timeoutMs: this.timeoutMs,
+                headers: { 'X-API-Key': moralisApiKey }
+              });
+              owners = data?.result || [];
+            } catch (err) {
+              console.warn(`⚠️ Moralis holders fetch failed: ${err.message}`);
+            }
+          }
+
+          // Fallback to Blockscout v2 Holders REST API
+          if (owners.length === 0) {
+            try {
+              const blockscoutHoldersUrl = `https://robinhoodchain.blockscout.com/api/v2/tokens/${tokenAddress}/holders`;
+              const data = await fetchJson(blockscoutHoldersUrl, { timeoutMs: this.timeoutMs });
+              const items = data?.items || [];
+              owners = items.map(item => ({
+                owner_address: item.address?.hash,
+                balance: item.value
+              })).filter(o => o.owner_address);
+            } catch (err) {
+              console.warn(`⚠️ Blockscout holders fetch failed: ${err.message}`);
+            }
+          }
+
+          return { owners };
+        } catch (err) {
+          console.warn(`⚠️ Robinhood Block 3 Error (Holders): ${err.message}`);
+          return { owners: [] };
+        }
+      })()
+    ]).catch(err => {
+      console.error(`⛔ Robinhood parallel analysis failed:`, err.message);
+      return [null, { earliestBuyTimeByWallet: new Map() }, { owners: [] }];
+    });
+
+    const poolRes = block1Res;
+    const earliestBuyTimeByWallet = block2Res?.earliestBuyTimeByWallet || new Map();
+    const rawOwners = block3Res?.owners || [];
+
+    if (!poolRes) {
+      return fallbackIntel('failed to retrieve Robinhood pool info or low liquidity');
+    }
+
+    const { pair, decimals, totalSupply, poolCreatedAtSec } = poolRes;
+
+    // Нормализуем холдеров
+    const parsedOwners = rawOwners.map(owner => {
+      const amount = decimalToNumber(owner.balance, decimals);
+      const pct = totalSupply > 0 ? (amount / totalSupply) * 100 : 0;
+      return {
+        wallet: compactAddress(owner.owner_address),
+        amount,
+        pct
+      };
+    }).filter(o => o.wallet && o.amount > 0);
+
+    const holderDistribution = {
+      topHolderPct: toNumber(parsedOwners[0]?.pct, 0),
+      top5Pct: parsedOwners.slice(0, 5).reduce((sum, o) => sum + o.pct, 0),
+      highSupplyWallets: parsedOwners.filter(o => o.pct >= HIGH_SUPPLY_SHARE).length,
+      analyzedWallets: Math.min(parsedOwners.length, this.maxHolderWallets)
+    };
+
+    // Запрос deployer и его пополнения (explorer)
+    let devWallet = '';
+    let devWalletIntel = null;
+    if (onStatusUpdate) await onStatusUpdate('🕵️ Robinhood Intel: Определение кошелька разработчика...');
+    devWallet = await getContractDeployer(tokenAddress, explorerApiUrl, explorerApiKey);
+    if (devWallet) {
+      const devFunding = await getFundingSource(devWallet, explorerApiUrl, explorerApiKey);
+      devWalletIntel = {
+        wallet: devWallet,
+        pct: 0,
+        fundingSource: devFunding.fundingSource,
+        fundedAtSec: devFunding.fundedAtSec,
+        walletAgeDays: devFunding.walletAgeDays
+      };
+    }
+
+    // Запрос пополнений для холдеров
+    if (onStatusUpdate && parsedOwners.length > 0) {
+      await onStatusUpdate('🕵️ Robinhood Intel: Проверка истории пополнений холдеров...');
+    }
+
+    const holderWalletsData = await Promise.all(
+      parsedOwners.slice(0, this.maxHolderWallets).map(async (owner) => {
+        const funding = await getFundingSource(owner.wallet, explorerApiUrl, explorerApiKey);
+        const enteredTokenAtSec = earliestBuyTimeByWallet.get(owner.wallet.toLowerCase()) || null;
+        return {
+          ...owner,
+          ...funding,
+          enteredTokenAtSec
+        };
+      })
+    );
+    const holderWallets = holderWalletsData.filter(Boolean);
+
+    // Классификация и аналитика
+    const behavior = classifyTokenBehavior({ buys24h: poolRes.buys24h, sells24h: poolRes.sells24h });
+    const highSupplyWallets = holderWallets.filter(w => w.pct >= HIGH_SUPPLY_SHARE);
+    const fundingCluster = detectFundingCluster({ highSupplyWallets, behavior, token: { buys24h: poolRes.buys24h, sells24h: poolRes.sells24h } });
+    const transferPattern = classifyTransferPattern({ highSupplyWallets, holderDistribution, behavior });
+    const finalCreatedAtSec = poolCreatedAtSec || (Date.now() / 1000 - toNumber(token.ageMinutes, 0) * 60);
+    const sniperBehavior = detectSniperBehavior({ token: { buys24h: poolRes.buys24h, ageMinutes: token.ageMinutes }, holderWallets, tokenCreatedAtSec: finalCreatedAtSec });
+
+    const walletAgeDays = median([
+      devWalletIntel?.walletAgeDays,
+      ...highSupplyWallets.map(w => w.walletAgeDays)
+    ]);
+    const firstFundingSource = firstString(devWalletIntel?.fundingSource, highSupplyWallets[0]?.fundingSource, 'unknown');
+    const connectedWallets = this.countConnectedWallets(highSupplyWallets);
+
+    const riskLevel = this.classifyRisk({
+      fundingCluster,
+      previousRugpulls: 0,
+      holderDistribution,
+      sniperBehavior,
+      behavior,
+      walletAgeDays,
+      connectedWallets,
+      transferPattern
+    });
+
+    const knowledgeGraph = buildKnowledgeGraph({
+      holderWallets,
+      devWalletIntel,
+      tokenCreatedAtSec: finalCreatedAtSec
+    });
+
+    return {
+      walletAgeDays,
+      firstFundingSource: firstFundingSource === 'unknown' ? 'unknown' : shortAddress(firstFundingSource),
+      connectedWallets,
+      previousTokens: 0,
+      previousRugpulls: 0,
+      realizedProfit: REALIZED_PROFIT_UNAVAILABLE,
+      sniperBehavior,
+      transferPattern,
+      fundingCluster: {
+        ...fundingCluster,
+        source: fundingCluster.source ? shortAddress(fundingCluster.source) : '',
+        wallets: fundingCluster.wallets.map(shortAddress)
+      },
+      holderDistribution,
+      devWallet: devWallet ? shortAddress(devWallet) : '',
+      riskLevel,
+      summary: this.buildSummary({
+        fundingCluster,
+        previousRugpulls: 0,
+        holderDistribution,
+        sniperBehavior,
+        transferPattern
+      }),
+      knowledgeGraph
     };
   }
 
