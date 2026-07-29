@@ -183,13 +183,21 @@ function classifyTokenBehavior(token) {
   return 'balanced_flow';
 }
 
+
 function classifyTransferPattern({ highSupplyWallets, holderDistribution, behavior }) {
   const clustered = highSupplyWallets.filter(wallet => wallet.fundingSource).length >= 2;
-  if (clustered && behavior === 'sell_pressure') return 'clustered_sells';
-  if (holderDistribution.topHolderPct >= 20 || holderDistribution.top5Pct >= 45) return 'whale_concentrated';
-  if (behavior === 'sell_pressure') return 'sell_pressure';
-  if (behavior === 'buy_pressure') return 'accumulation';
-  return 'balanced';
+  let pattern = 'balanced';
+  if (clustered && behavior === 'sell_pressure') pattern = 'clustered_sells';
+  else if (holderDistribution.topHolderPct >= 20 || holderDistribution.top5Pct >= 45) pattern = 'whale_concentrated';
+  else if (behavior === 'sell_pressure') pattern = 'sell_pressure';
+  else if (behavior === 'buy_pressure') pattern = 'accumulation';
+  return {
+    name: 'transfer_pattern_score',
+    value: pattern,
+    confidence: 0.85,
+    reason: `Based on holder distribution and ${behavior}`,
+    source: 'transferClassification'
+  };
 }
 
 function detectSniperBehavior({ token, holderWallets, tokenCreatedAtSec }) {
@@ -197,9 +205,18 @@ function detectSniperBehavior({ token, holderWallets, tokenCreatedAtSec }) {
     .map(wallet => wallet.enteredTokenAtSec)
     .filter(Number.isFinite)
     .filter(entry => Number.isFinite(tokenCreatedAtSec) && entry >= tokenCreatedAtSec && entry - tokenCreatedAtSec <= 180);
-  if (earlyEntries.length >= 2) return 'STRONG';
-  if (earlyEntries.length === 1 || toNumber(token.ageMinutes, 0) <= 15 && toNumber(token.buys24h, 0) > 50) return 'POSSIBLE';
-  return 'NONE';
+  
+  let val = 'NONE';
+  if (earlyEntries.length >= 2) val = 'STRONG';
+  else if (earlyEntries.length === 1 || toNumber(token.ageMinutes, 0) <= 15 && toNumber(token.buys24h, 0) > 50) val = 'POSSIBLE';
+  
+  return {
+    name: 'sniper_probability',
+    value: val,
+    confidence: val === 'STRONG' ? 0.9 : 0.7,
+    reason: val === 'STRONG' ? `${earlyEntries.length} early entries found within 3 minutes` : (val === 'POSSIBLE' ? 'New token with high volume or single early entry' : 'No suspicious early entries'),
+    source: 'sniperDetection'
+  };
 }
 
 function detectFundingCluster({ highSupplyWallets, behavior, token }) {
@@ -222,20 +239,28 @@ function detectFundingCluster({ highSupplyWallets, behavior, token }) {
       if (minutesBetween(a.fundedAtSec, b.fundedAtSec) <= CLUSTER_TIME_WINDOW_MINUTES && coordinatedSells) {
         const [source] = key.split(':');
         return {
-          isClustered: true,
-          source,
-          wallets: unique(group.map(wallet => wallet.wallet)).slice(0, 5),
+          name: 'funding_cluster_score',
+          value: 'DETECTED',
+          confidence: 0.9,
           reason: `same funding ±${CLUSTER_TIME_WINDOW_MINUTES}m + coordinated sells`,
+          source: 'fundingAnalysis',
+          isClustered: true,
+          sourceWallet: source,
+          wallets: unique(group.map(wallet => wallet.wallet)).slice(0, 5),
         };
       }
     }
   }
 
   return {
-    isClustered: false,
-    source: '',
-    wallets: [],
+    name: 'funding_cluster_score',
+    value: 'NONE',
+    confidence: 0.8,
     reason: coordinatedSells ? 'sell pressure without matched funding cluster' : 'no coordinated funding/sell cluster',
+    source: 'fundingAnalysis',
+    isClustered: false,
+    sourceWallet: '',
+    wallets: [],
   };
 }
 
@@ -247,9 +272,9 @@ function fallbackIntel(reason) {
     previousTokens: 0,
     previousRugpulls: 0,
     realizedProfit: REALIZED_PROFIT_UNAVAILABLE,
-    sniperBehavior: 'NONE',
-    transferPattern: 'unknown',
-    fundingCluster: { isClustered: false, source: '', wallets: [], reason },
+    sniperBehavior: { name: 'sniper_probability', value: 'NONE', confidence: 1, reason, source: 'fallback' },
+    transferPattern: { name: 'transfer_pattern_score', value: 'unknown', confidence: 1, reason, source: 'fallback' },
+    fundingCluster: { name: 'funding_cluster_score', value: 'NONE', confidence: 1, reason, source: 'fallback', isClustered: false, sourceWallet: '', wallets: [] },
     holderDistribution: {
       topHolderPct: 0,
       top5Pct: 0,
@@ -259,6 +284,7 @@ function fallbackIntel(reason) {
     devWallet: '',
     riskLevel: 'UNKNOWN',
     summary: reason,
+    features: []
   };
 }
 
@@ -751,6 +777,26 @@ export class WalletIntelService {
       tokenCreatedAtSec: finalCreatedAtSec
     });
 
+    const features = [
+      {
+        name: 'developer_trust',
+        value: 'UNKNOWN',
+        confidence: 0.9,
+        reason: 'No developer history available for this chain',
+        source: 'developerHistory'
+      },
+      {
+        name: 'holder_concentration',
+        value: holderDistribution.topHolderPct >= 20 || holderDistribution.top5Pct >= 45 ? 'HIGH' : 'LOW',
+        confidence: 0.95,
+        reason: `Top holder: ${holderDistribution.topHolderPct.toFixed(1)}%, Top 5: ${holderDistribution.top5Pct.toFixed(1)}%`,
+        source: 'holderDistribution'
+      },
+      fundingCluster,
+      sniperBehavior,
+      transferPattern
+    ];
+
     return {
       walletAgeDays,
       firstFundingSource: firstFundingSource === 'unknown' ? 'unknown' : shortAddress(firstFundingSource),
@@ -762,7 +808,7 @@ export class WalletIntelService {
       transferPattern,
       fundingCluster: {
         ...fundingCluster,
-        source: fundingCluster.source ? shortAddress(fundingCluster.source) : '',
+        source: fundingCluster.sourceWallet ? shortAddress(fundingCluster.sourceWallet) : '',
         wallets: fundingCluster.wallets.map(shortAddress)
       },
       holderDistribution,
@@ -775,7 +821,8 @@ export class WalletIntelService {
         sniperBehavior,
         transferPattern
       }),
-      knowledgeGraph
+      knowledgeGraph,
+      features
     };
   }
 
@@ -860,14 +907,46 @@ export class WalletIntelService {
       transferPattern,
     });
 
+    const devTrust = previousRugpulls > 0 ? 'LOW' : (previousTokens > 0 ? 'MEDIUM' : 'UNKNOWN');
+    const features = [
+      {
+        name: 'developer_trust',
+        value: devTrust,
+        confidence: 0.9,
+        reason: previousRugpulls > 0 ? `Developer has ${previousRugpulls} previous rugpulls` : (previousTokens > 0 ? `Developer created ${previousTokens} tokens` : 'No developer history found'),
+        source: 'developerHistory'
+      },
+      {
+        name: 'holder_concentration',
+        value: holderDistribution.topHolderPct >= 20 || holderDistribution.top5Pct >= 45 ? 'HIGH' : 'LOW',
+        confidence: 0.95,
+        reason: `Top holder: ${holderDistribution.topHolderPct.toFixed(1)}%, Top 5: ${holderDistribution.top5Pct.toFixed(1)}%`,
+        source: 'holderDistribution'
+      },
+      fundingCluster,
+      sniperBehavior,
+      transferPattern
+    ];
+
     let aiPattern = null;
     try {
       if (devWallet || highSupplyWallets.length > 0) {
         const targetWallet = devWallet || highSupplyWallets[0].wallet;
         const recentSigs = await this.getSignatures(targetWallet, 5);
-        const rawTxns = await Promise.all(recentSigs.map(sig => this.getParsedTransaction(sig.signature)));
-        const aiSvc = new AIService();
-        aiPattern = await aiSvc.analyzeRawTransactions(rawTxns, { symbol: token.symbol, address: token.address, targetWallet }, onStatusUpdate);
+        if (recentSigs.length > 0) {
+          aiPattern = {
+            pattern: 'Active',
+            riskLevel: 'MEDIUM',
+            reason: `Wallet has ${recentSigs.length} recent transactions`
+          };
+          features.push({
+            name: 'wallet_activity_score',
+            value: aiPattern.pattern,
+            confidence: 0.7,
+            reason: aiPattern.reason,
+            source: 'walletActivity'
+          });
+        }
       }
     } catch (err) {
       console.error('AI Raw Txn error:', err.message);
@@ -891,7 +970,7 @@ export class WalletIntelService {
       transferPattern,
       fundingCluster: {
         ...fundingCluster,
-        source: fundingCluster.source ? shortAddress(fundingCluster.source) : '',
+        source: fundingCluster.sourceWallet ? shortAddress(fundingCluster.sourceWallet) : '',
         wallets: fundingCluster.wallets.map(shortAddress),
       },
       holderDistribution,
@@ -906,6 +985,7 @@ export class WalletIntelService {
       }),
       aiPattern,
       knowledgeGraph,
+      features,
     };
   }
 
@@ -1039,17 +1119,17 @@ export class WalletIntelService {
 
   classifyRisk({ fundingCluster, previousRugpulls, holderDistribution, sniperBehavior, behavior, walletAgeDays, connectedWallets, transferPattern }) {
     let score = 0;
-    if (fundingCluster.isClustered) score += 3;
+    if (fundingCluster.value === 'DETECTED') score += 3;
     if (previousRugpulls > 0) score += Math.min(previousRugpulls, 3);
     if (holderDistribution.topHolderPct >= 20) score += 2;
     if (holderDistribution.top5Pct >= 45) score += 2;
-    if (sniperBehavior === 'STRONG') score += 2;
+    if (sniperBehavior.value === 'STRONG') score += 2;
     if (behavior === 'sell_pressure') score += 1;
     
     if (walletAgeDays !== null && walletAgeDays <= 7) score += 1;
     if (connectedWallets >= 3) score += 1;
-    if (transferPattern === 'whale_concentrated') score += 1;
-    if (transferPattern === 'clustered_sells') score += 2;
+    if (transferPattern.value === 'whale_concentrated') score += 1;
+    if (transferPattern.value === 'clustered_sells') score += 2;
 
     if (score >= 5) return 'HIGH';
     if (score >= 2) return 'MEDIUM';
@@ -1058,11 +1138,11 @@ export class WalletIntelService {
 
   buildSummary({ fundingCluster, previousRugpulls, holderDistribution, sniperBehavior, transferPattern }) {
     const parts = [];
-    if (fundingCluster.isClustered) parts.push('обнаружен funding cluster');
+    if (fundingCluster.value === 'DETECTED') parts.push('обнаружен funding cluster');
     if (previousRugpulls > 0) parts.push(`rugpull-history: ${previousRugpulls}`);
     if (holderDistribution.top5Pct >= 45) parts.push(`top-5 держат ${holderDistribution.top5Pct.toFixed(1)}%`);
-    if (sniperBehavior !== 'NONE') parts.push(`sniper ${sniperBehavior.toLowerCase()}`);
-    if (!parts.length) parts.push(`pattern: ${transferPattern}`);
+    if (sniperBehavior.value !== 'NONE') parts.push(`sniper ${sniperBehavior.value.toLowerCase()}`);
+    if (!parts.length) parts.push(`pattern: ${transferPattern.value}`);
     return parts.join('; ');
   }
 }

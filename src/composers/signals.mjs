@@ -26,7 +26,32 @@ const STABLE_BASE = new Set([
   'FDUSD',
   'BUSD',
 ]);
+const NATIVE_COINS = [
+  "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "AVAX", "TRX", "DOT", "LINK",
+  "SUI", "APT", "NEAR", "TON", "ATOM", "LTC", "BCH", "XLM", "ALGO", "ICP",
+  "FIL", "ETC", "XMR", "HBAR", "VET", "KAS", "SEI", "TIA", "INJ", "FTM",
+  "POL", "ARB", "OP", "STRK", "MANTA", "METIS", "RON", "SMR", "CORE", "KLAY"
+];
 
+
+/**
+ * Функция для определения типа актива
+ * @param {string} inputTicker - Тикер от пользователя (например, ' btc ', 'ETH', 'pepe')
+ * @returns {string} - Строка 'натив' или 'токен'
+ */
+export function getAssetType(inputTicker) {
+  if (!inputTicker) return "токен"; // Защита от пустого ввода
+
+  // Очищаем от пробелов и приводим к верхнему регистру (btc -> BTC)
+  const cleanTicker = inputTicker.trim().toUpperCase();
+
+  // Проверяем, есть ли тикер в нашем массиве нативных монет
+  if (NATIVE_COINS.includes(cleanTicker)) {
+    return "native";
+  } else {
+    return "token";
+  }
+}
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -499,7 +524,7 @@ async function getTopTrades(tokenData, priceUsd, timeoutMs = 8000) {
   }
 }
 
-export async function runUserSignalAnalysis(ctx, ticker, description, direction = null) {
+export async function runUserSignalAnalysis(ctx, ticker, description, direction = null, type_coin) {
   let keys;
   try {
     keys = await new AuthService().getUserKeys(ctx.from.id);
@@ -543,12 +568,15 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
     const walletIntel = new WalletIntelService();
 
     if (isAddress) {
-      await updateStatus('🕵️ Обнаружен контракт-адрес. Запрашиваю информацию о токене на DEX...');
-      searchResults = await tokenDiscovery.fetchDexScreenerTokenByQuery(ticker, updateStatus);
-      tokenData = searchResults.find(t => t.address.toLowerCase() === ticker.toLowerCase()) || searchResults[0] || null;
-      if (tokenData && tokenData.symbol) {
-        resolvedTicker = tokenData.symbol;
-        await updateStatus(`✅ Контракт распознан как токен: <b>${escapeHtml(resolvedTicker)}</b>`);
+      if(type_coin === 'token'){
+
+        await updateStatus('🕵️ Обнаружен контракт-адрес. Запрашиваю информацию о токене на DEX...');
+        searchResults = await tokenDiscovery.fetchDexScreenerTokenByQuery(ticker, updateStatus);
+        tokenData = searchResults.find(t => t.address.toLowerCase() === ticker.toLowerCase()) || searchResults[0] || null;
+        if (tokenData && tokenData.symbol) {
+          resolvedTicker = tokenData.symbol;
+          await updateStatus(`✅ Контракт распознан как токен: <b>${escapeHtml(resolvedTicker)}</b>`);
+        }
       }
     }
 

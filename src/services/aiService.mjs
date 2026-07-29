@@ -354,30 +354,9 @@ ${rawText.slice(0, 12000)}
     const wi = token.walletIntel || {};
     const distribution = wi.holderDistribution || {};
     const cluster = wi.fundingCluster || {};
-    const onchainBlock = token.walletIntel ? JSON.stringify({
+    const onchainBlock = token.walletIntel && wi.features ? JSON.stringify({
       riskLevel: wi.riskLevel,
-      walletAgeDays: wi.walletAgeDays,
-      firstFundingSource: wi.firstFundingSource,
-      connectedWallets: wi.connectedWallets,
-      previousTokens: wi.previousTokens,
-      previousRugpulls: wi.previousRugpulls,
-      sniperBehavior: wi.sniperBehavior,
-      transferPattern: wi.transferPattern,
-      devWallet: wi.devWallet,
-      holderDistribution: {
-        topHolderPct: distribution.topHolderPct,
-        top5Pct: distribution.top5Pct,
-        highSupplyWallets: distribution.highSupplyWallets,
-        analyzedWallets: distribution.analyzedWallets,
-      },
-      fundingCluster: {
-        isClustered: cluster.isClustered,
-        source: cluster.source,
-        walletsCount: (cluster.wallets || []).length,
-        reason: cluster.reason,
-      },
-      aiPattern: wi.aiPattern || null,
-      summary: wi.summary,
+      features: wi.features,
     }, null, 2) : 'нет on-chain данных (неподдерживаемая сеть)';
 
     const prompt = `Ты профессиональный Web3-аналитик мемкоинов и новых DEX-пулов. Торговля НЕ автоматическая: нужен сигнал для ручного решения.
@@ -409,18 +388,12 @@ ${researchText}
 ИНСТРУКЦИЯ ПО АНАЛИЗУ:
 1. CEX-метрики: оцени ликвидность, buy/sell pressure, возраст пула, объём.
 2. On-chain данные (если есть):
-   - riskLevel: агрегированный on-chain риск (HIGH/MEDIUM/LOW)
-   - holderDistribution: topHolderPct > 20% или top5Pct > 45% — концентрация китов
-   - fundingCluster.isClustered: true — координированное финансирование (rug pull паттерн)
-   - sniperBehavior: STRONG — присутствие снайперов при запуске
-   - transferPattern: whale_concentrated / clustered_sells — опасные паттерны
-   - previousRugpulls > 0: разработчик уже имеет rug pull историю
-   - walletAgeDays <= 7: свежие кошельки = повышенный риск
-   - connectedWallets >= 3: сеть связанных кошельков
-   - aiPattern: паттерн из AI-анализа сырых транзакций (Rug Pull, Whale Accumulation, etc.)
+   - Изучи массив features. Каждая фича уже интерпретирована (например HIGH/LOW/DETECTED).
+   - Опирайся на confidence и reason каждой фичи, чтобы не делать сырых вычислений.
+   - riskLevel: агрегированный on-chain риск (HIGH/MEDIUM/LOW).
 3. Research context: учти свежие инсайты из Telegram-каналов.
 
-Весомость: on-chain данные ВАЖНЕЕ CEX-метрик. Если on-chain показывает funding cluster + rug history + sniper — это AVOID даже при хороших CEX-метриках.
+Весомость: on-chain данные ВАЖНЕЕ CEX-метрик. Если on-chain показывает funding cluster + rug history + sniper — это AVOID даже при хороших CEX-метриках, НО, если в liquidityUsd = 0 мин ИЛИ riskLevel = UNKNOWN, ТО ОПИРАЙСЯ НА CEX данные
 
 Ответь СТРОГО одной строкой JSON без markdown: {"verdict":"BUY"|"WAIT"|"AVOID","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"кратко по-русски, 1-2 предложения, обязательно упомяни ключевые on-chain факторы"}`;
 
@@ -600,52 +573,7 @@ ${JSON.stringify(posts, null, 2)}`;
     return JSON.parse(jsonMatch[0]);
   }
 
-  /** Анализирует сырые данные транзакций для выявления паттернов манипуляции, аккумуляции или распределения китами. */
-  async analyzeRawTransactions(transactions, tokenContext = {}, onStatusUpdate = null) {
-    const prompt = `Ты On-chain аналитик. Проанализируй список сырых транзакций токена.
-Контекст токена: ${JSON.stringify(tokenContext)}
 
-Транзакции:
-${JSON.stringify(transactions).slice(0, 15000)}
-
-Твоя задача: определить доминирующий паттерн ("Rug Pull", "Whale Accumulation", "Retail FOMO", "Distribution", "Balanced") и оценить риск.
-Учти перетоки средств, снайперов и кошельки создателей.
-Ответь СТРОГО одной строкой JSON без markdown: {"pattern":"ПАТТЕРН","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"кратко по-русски"}`;
-
-    try {
-      if (onStatusUpdate) await onStatusUpdate('🤖 AI: Анализирую сырые on-chain транзакции...');
-      const data = await this.chatWithModelFallback({
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 300,
-        temperature: 0.3,
-      }, onStatusUpdate);
-
-      const raw = data?.choices?.[0]?.message?.content?.trim() || '';
-      // Извлекаем JSON: ленивая регулярка берёт первый валидный {...} блок
-      const jsonMatch = raw.match(/\{[\s\S]*?\}/);
-      if (!jsonMatch) {
-        return { pattern: 'Unknown', riskLevel: 'MEDIUM', reason: 'Не удалось разобрать ответ ИИ.' };
-      }
-
-      // Очистка типичных артефактов LLM: «умные» кавычки, trailing commas, markdown
-      const sanitized = jsonMatch[0]
-        .replace(/[\u201C\u201D\u201E\u00AB\u00BB]/g, '"')  // «» "" → "
-        .replace(/[\u2018\u2019]/g, "'")                      // '' → '
-        .replace(/,\s*([\]}])/g, '$1')                        // trailing commas
-        .replace(/```json\s*/gi, '')                           // markdown fence
-        .replace(/```\s*/g, '');
-
-      try {
-        return JSON.parse(sanitized);
-      } catch {
-        console.warn('analyzeRawTransactions: невалидный JSON от LLM, raw:', jsonMatch[0]);
-        return { pattern: 'Unknown', riskLevel: 'MEDIUM', reason: 'Ответ ИИ не является валидным JSON.' };
-      }
-    } catch (err) {
-      console.error('analyzeRawTransactions error:', err.message);
-      return { pattern: 'Error', riskLevel: 'HIGH', reason: 'Ошибка анализа транзакций нейросетью.' };
-    }
-  }
 
   /** Блок AI: Анализ новостей и формирование поста с shill интеграцией */
   async generateCryptoNewsPost(newsArray, styleContext = null) {

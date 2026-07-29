@@ -6,6 +6,7 @@ import { showSettingsMenu } from './settings.mjs';
 // import { runAiSignal } from './aiSignalComposer.mjs';
 import { runWeb3Discovery } from './web3Discovery.mjs';
 import { showAutopostingMenu } from './autoposting.mjs';
+import { getAssetType } from './signals.mjs';
 
 
 export const mainMenuComposer = new Composer();
@@ -56,13 +57,14 @@ mainMenuComposer.on('message:text', async (ctx, next) => {
     // Очищаем первую строку от эмодзи и спецсимволов для надежного поиска тикера
     const firstLineClean = lines[0].replace(/[^\w\s-]/gi, '').trim();
     const ticker = firstLineClean.split(/\s+/)[0];
+    const type_coin = getAssetType(ticker);
     
     // Оставляем весь текст как описание, чтобы ИИ видел все детали (плечо, цены и т.д.)
     const description = text;
     
-    console.log('Parsed signal:', ticker, direction);
+    console.log('Parsed signal:', ticker, direction, type_coin);
 
-    await runUserSignalAnalysis(ctx, ticker, description, direction);
+    await runUserSignalAnalysis(ctx, ticker, description, direction, type_coin);
     return;
   }
 
