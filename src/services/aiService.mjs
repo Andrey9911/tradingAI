@@ -341,8 +341,16 @@ ${rawText.slice(0, 12000)}
   }
 
 
-  /** Анализирует метрики найденного токена с помощью ИИ для вынесения итогового вердикта (BUY/WAIT/AVOID). */
-  async evaluateDiscoveredToken(token, onStatusUpdate = null, researchContext = []) {
+  /**
+   * Универсальный метод оценки токенов и сигналов с помощью ИИ.
+   * Поддерживает как токены из Web3 Discovery, так и сигналы пользователей из Signal Analysis.
+   * 
+   * @param {Object} input - Токен из Discovery или aggregatedData из Signal Analysis
+   * @param {Function} [onStatusUpdate] - Функция для обновления статуса анализа
+   * @param {Array} [researchContext] - Дополнительный контекст ресерча
+   * @returns {Promise<{ verdict: string, riskLevel: string, reason: string }>}
+   */
+  async evaluateDiscoveredToken(input, onStatusUpdate = null, researchContext = []) {
     const researchText = Array.isArray(researchContext) && researchContext.length
       ? researchContext
         .map((item, index) => `${index + 1}. ${item.summary || item.insights || ''}\nSignals: ${(item.signals || []).join(', ')}`)
@@ -350,76 +358,152 @@ ${rawText.slice(0, 12000)}
         .slice(0, 5000)
       : 'нет свежего short-term research context';
 
-    // On-chain wallet intelligence (from walletIntel.analyzeTopTokens)
-    const wi = token.walletIntel || {};
-    const distribution = wi.holderDistribution || {};
-    const cluster = wi.fundingCluster || {};
-    const onchainBlock = token.walletIntel && wi.features ? JSON.stringify({
-      riskLevel: wi.riskLevel,
-      features: wi.features,
-    }, null, 2) : 'нет on-chain данных (неподдерживаемая сеть)';
+    // Проверяем тип входных данных (Signal Analysis или Web3 Discovery)
+    const isSignalAnalysis = Boolean(input && (input.ticker || input.description || input.market || input.technical_analysis));
 
-    const prompt = `Ты профессиональный Web3-аналитик мемкоинов и новых DEX-пулов. Торговля НЕ автоматическая: нужен сигнал для ручного решения.
+    let riskLevel = 'UNKNOWN';
+    let features = [];
+    let onchainBlock = 'нет on-chain данных (неподдерживаемая сеть или CEX актив)';
 
-CEX/DEX метрики токена:
-${JSON.stringify({
-      chain: token.chain,
-      address: token.address,
-      symbol: token.symbol,
-      price: token.price,
-      marketCap: token.marketCap,
-      liquidityUsd: token.liquidityUsd,
-      volume24h: token.volume24h,
-      buys24h: token.buys24h,
-      sells24h: token.sells24h,
-      holders: token.holders,
-      ageMinutes: token.ageMinutes,
-      dex: token.dex,
-      pairAddress: token.pairAddress,
-      source: token.source,
-    }, null, 2)}
+    if (isSignalAnalysis) {
+      if (input.onchain) {
+        riskLevel = input.onchain.riskLevel || 'UNKNOWN';
+        features = input.onchain.features || [];
+        onchainBlock = JSON.stringify({
+          riskLevel,
+          features,
+          ...(input.onchain.fundingCluster ? { fundingCluster: input.onchain.fundingCluster } : {}),
+          ...(input.onchain.sniperBehavior ? { sniperBehavior: input.onchain.sniperBehavior } : {}),
+          ...(input.onchain.transferPattern ? { transferPattern: input.onchain.transferPattern } : {}),
+          ...(input.onchain.holderDistribution ? { holderDistribution: input.onchain.holderDistribution } : {}),
+          ...(input.onchain.knowledgeGraph ? { knowledgeGraph: input.onchain.knowledgeGraph } : {}),
+          ...(input.onchain.devWallet ? { devWallet: input.onchain.devWallet } : {}),
+          ...(input.onchain.walletAgeDays != null ? { walletAgeDays: input.onchain.walletAgeDays } : {}),
+          ...(input.onchain.firstFundingSource ? { firstFundingSource: input.onchain.firstFundingSource } : {}),
+          ...(input.onchain.connectedWallets != null ? { connectedWallets: input.onchain.connectedWallets } : {}),
+          ...(input.onchain.previousTokens != null ? { previousTokens: input.onchain.previousTokens } : {}),
+          ...(input.onchain.previousRugpulls != null ? { previousRugpulls: input.onchain.previousRugpulls } : {}),
+          ...(input.onchain.realizedProfit ? { realizedProfit: input.onchain.realizedProfit } : {}),
+          ...(input.onchain.summary ? { summary: input.onchain.summary } : {}),
+          ...(input.onchain.token ? { token: input.onchain.token } : {}),
+          ...(input.onchain.topRecentTrades ? { topRecentTrades: input.onchain.topRecentTrades } : {}),
+        }, null, 2);
+      }
+    } else {
+      const wi = input?.walletIntel || {};
+      riskLevel = wi.riskLevel || 'UNKNOWN';
+      features = wi.features || [];
+      if (input?.walletIntel && (features.length > 0 || riskLevel !== 'UNKNOWN')) {
+        onchainBlock = JSON.stringify({
+          riskLevel,
+          features,
+          ...(wi.fundingCluster ? { fundingCluster: wi.fundingCluster } : {}),
+          ...(wi.sniperBehavior ? { sniperBehavior: wi.sniperBehavior } : {}),
+          ...(wi.transferPattern ? { transferPattern: wi.transferPattern } : {}),
+        }, null, 2);
+      }
+    }
 
-On-chain Wallet Intelligence:
+    let prompt = '';
+
+    if (isSignalAnalysis) {
+      prompt = `Ты профессиональный крипто-аналитик и риск-менеджер. Проанализируй сигнал от пользователя и собранные метрики.
+
+СИГНАЛ ПОЛЬЗОВАТЕЛЯ:
+Тикер: ${input.ticker || '—'}
+Направление: ${input.direction || 'не указано'}
+Описание: ${input.description || 'нет'}
+
+ПРИОРИТЕТ 1 — Рыночные и технические данные:
+Рынок: ${JSON.stringify(input.market || {}, null, 2)}
+Технический анализ: ${JSON.stringify(input.technical_analysis || {}, null, 2)}
+Ликвидность стакана CEX: ${JSON.stringify(input.liquidityClusters || {}, null, 2)}
+Деривативы (Funding/OI/LS): ${JSON.stringify(input.derivatives || {}, null, 2)}
+Новости: ${JSON.stringify(input.news || {}, null, 2)}
+
+ПРИОРИТЕТ 2 — On-chain Wallet Intelligence (Признаки и Risk Level):
 ${onchainBlock}
+
+Свежий research context:
+${researchText}
+
+ИНСТРУКЦИЯ ПО АНАЛИЗУ (СТРОГИЙ ПРИОРИТЕТ!):
+1. **ВЫСШИЙ ПРИОРИТЕТ — ПРИЗНАКИ И РИСК**: Первостепенно опирайся на готовые интерпретированные признаки (features) и уровень риска (riskLevel). В массиве features каждая фича (например developer_trust, holder_concentration, funding_cluster_score, sniper_probability, transfer_pattern_score) уже вычислена и содержит точность (confidence) и причину (reason). Верь этим признакам и риску в первую очередь!
+2. **ВТОРОСТЕПЕННЫЙ ПРИОРИТЕТ — СЫРЫЕ ДАННЫЕ**: Сырые рыночные и технические данные (цены, объемы, свечи, RSI, EMA, ордербук) используй ВО ВТОРУЮ ОЧЕРЕДЬ как вспомогательный контекст для определения точек входа/выхода или если riskLevel = UNKNOWN / on-chain признаки отсутствуют.
+3. Оцени соответствие сигнала рыночной обстановке с учетом направления (LONG/SHORT), если оно указано.
+4. Отвечай СТРОГО на русском языке. Вердикт должен быть строго одним из: "ПОКУПАТЬ", "ПРОДАВАТЬ", "ЖДАТЬ", "ИЗБЕГАТЬ".
+5. Если есть Take Profit/Stop Loss в сигнале, то в вердикте укажи твою точку зрения по поводу этих уровней.
+6.Основываясь на техническом анализе и кластеру ликвидности, укажи примерные значения входа в сделку (учитывай пробития ниже уровней)
+Ответь  без markdown:
+{"verdict":"ПОКУПАТЬ"|"ПРОДАВАТЬ"|"ЖДАТЬ"|"ИЗБЕГАТЬ","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"по-русски, 1-5 предложения, опирайся в первую очередь на признаки и риск-профиль. при анализе cex выдай вердикт о примерных будущих прогнозах, основываясь на уровнях поддержки, сопротивления, объёмах, инсайдерах и исторических данных."}`;
+    } else {
+      prompt = `Ты профессиональный Web3-аналитик мемкоинов и новых DEX-пулов. Торговля НЕ автоматическая: нужен сигнал для ручного решения.
+
+ПРИОРИТЕТ 1 — On-chain Wallet Intelligence (Признаки и Risk Level):
+${onchainBlock}
+
+ПРИОРИТЕТ 2 — CEX/DEX метрики токена:
+${JSON.stringify({
+        chain: input.chain,
+        address: input.address,
+        symbol: input.symbol,
+        price: input.price,
+        marketCap: input.marketCap,
+        liquidityUsd: input.liquidityUsd,
+        volume24h: input.volume24h,
+        buys24h: input.buys24h,
+        sells24h: input.sells24h,
+        holders: input.holders,
+        ageMinutes: input.ageMinutes,
+        dex: input.dex,
+        pairAddress: input.pairAddress,
+        source: input.source,
+      }, null, 2)}
+      Технический анализ: ${JSON.stringify(input.technical_analysis || {}, null, 2)}
 
 Свежий research context из Telegram-каналов:
 ${researchText}
 
-ИНСТРУКЦИЯ ПО АНАЛИЗУ:
-1. CEX-метрики: оцени ликвидность, buy/sell pressure, возраст пула, объём.
-2. On-chain данные (если есть):
-   - Изучи массив features. Каждая фича уже интерпретирована (например HIGH/LOW/DETECTED).
-   - Опирайся на confidence и reason каждой фичи, чтобы не делать сырых вычислений.
-   - riskLevel: агрегированный on-chain риск (HIGH/MEDIUM/LOW).
+ИНСТРУКЦИЯ ПО АНАЛИЗУ (СТРОГИЙ ПРИОРИТЕТ!):
+1. **ВЫСШИЙ ПРИОРИТЕТ — ПРИЗНАКИ И РИСК**: В первую очередь опирайся на готовые интерпретированные признаки (features) и уровень риска (riskLevel). Каждая фича в массиве features (например developer_trust, holder_concentration, funding_cluster_score, sniper_probability, transfer_pattern_score) уже вычислена и содержит точность (confidence) и причину (reason). Не пересчитывай сырые данные вручную, верь готовым признакам и риску!
+2. **ВТОРОСТЕПЕННЫЙ ПРИОРИТЕТ — СЫРЫЕ ДАННЫЕ**: Сырые метрики токена (ликвидность, объемы, buy/sell pressure, возраст пула) используй ВО ВТОРУЮ ОЧЕРЕДЬ как дополнительный контекст или если riskLevel = UNKNOWN / on-chain признаки отсутствуют.
 3. Research context: учти свежие инсайты из Telegram-каналов.
+4. Отвечай СТРОГО на русском языке. Вердикт должен быть строго одним из: "ПОКУПАТЬ", "ЖДАТЬ", "ИЗБЕГАТЬ".
 
-Весомость: on-chain данные ВАЖНЕЕ CEX-метрик. Если on-chain показывает funding cluster + rug history + sniper — это AVOID даже при хороших CEX-метриках, НО, если в liquidityUsd = 0 мин ИЛИ riskLevel = UNKNOWN, ТО ОПИРАЙСЯ НА CEX данные
-
-Ответь СТРОГО одной строкой JSON без markdown: {"verdict":"BUY"|"WAIT"|"AVOID","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"кратко по-русски, 1-2 предложения, обязательно упомяни ключевые on-chain факторы"}`;
+Ответь СТРОГО одной строкой JSON без markdown: {"verdict":"ПОКУПАТЬ"|"ЖДАТЬ"|"ИЗБЕГАТЬ","riskLevel":"LOW"|"MEDIUM"|"HIGH","reason":"по-русски, 1-2 предложения, обязательно опирайся на признаки и риск-профиль"}`;
+    }
 
     try {
       const data = await this.chatWithModelFallback({
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 22000,
-        temperature: 0.45,
+        temperature: 0.4,
       }, onStatusUpdate);
       const raw = data?.choices?.[0]?.message?.content?.trim() || '';
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        return { verdict: 'WAIT', riskLevel: 'MEDIUM', reason: raw.slice(0, 500) || 'ИИ не вернул структурированный ответ.' };
+        return { verdict: 'ЖДАТЬ', riskLevel: riskLevel !== 'UNKNOWN' ? riskLevel : 'MEDIUM', reason: raw.slice(0, 500) || 'ИИ не вернул структурированный ответ.' };
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
-      const verdictRaw = String(parsed.verdict || '').toUpperCase();
-      const riskRaw = String(parsed.riskLevel || '').toUpperCase();
+      const verdictRaw = String(parsed.verdict || '').trim().toUpperCase();
+      const riskRaw = String(parsed.riskLevel || riskLevel || '').toUpperCase();
+
+      let verdict = 'ЖДАТЬ';
+      if (['BUY', 'ПОКУПАТЬ', 'ПОКУПКА', 'LONG', 'ЛОНГ'].includes(verdictRaw)) verdict = 'ПОКУПАТЬ';
+      else if (['SELL', 'ПРОДАВАТЬ', 'ПРОДАЖА', 'SHORT', 'ШОРТ'].includes(verdictRaw)) verdict = 'ПРОДАВАТЬ';
+      else if (['AVOID', 'ИЗБЕГАТЬ', 'ОПАСНО'].includes(verdictRaw)) verdict = 'ИЗБЕГАТЬ';
+      else if (['WAIT', 'ЖДАТЬ', 'ОЖИДАНИЕ'].includes(verdictRaw)) verdict = 'ЖДАТЬ';
+      else verdict = verdictRaw || 'ЖДАТЬ';
+
       return {
-        verdict: verdictRaw === 'BUY' ? 'BUY' : verdictRaw === 'AVOID' ? 'AVOID' : 'WAIT',
+        verdict,
         riskLevel: riskRaw === 'LOW' ? 'LOW' : riskRaw === 'HIGH' ? 'HIGH' : 'MEDIUM',
-        reason: String(parsed.reason || '').slice(0, 500),
+        reason: String(parsed.reason || '').slice(0, 1000),
       };
     } catch (err) {
       console.error('evaluateDiscoveredToken:', err);
-      return { verdict: 'WAIT', riskLevel: 'MEDIUM', reason: 'Ошибка AI-анализа discovery token.' };
+      return { verdict: 'ЖДАТЬ', riskLevel: riskLevel !== 'UNKNOWN' ? riskLevel : 'MEDIUM', reason: 'Ошибка AI-анализа.' };
     }
   }
 
@@ -472,7 +556,7 @@ SL в сигнале: ${ctx.hasSl ? 'да' : 'нет'}
 Интеграция (Soft Shill):
 Сформируй отдельный текст для нативной, "холодной" интеграции нашего закрытого продукта.
 Контекст: Проект \`tradingAI\` — приватный Telegram-бот для автоматизации (Bybit, TON), парсинга каналов и обработки сигналов с помощью ИИ.
-Намекни, что благодаря этим изменениям бот стал еще умнее или быстрее реагировать на рынок.
+Намекни, что благодаря боту анализ рынка и отдельных токенов стал более автоматизированным, но еще в некоторых местах недоработан.
 
 Идея пользователя:
 ${String(idea || 'нет').slice(0, 2000)}

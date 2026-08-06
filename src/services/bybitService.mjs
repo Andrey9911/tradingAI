@@ -759,6 +759,12 @@ export class BybitService {
   }
 }
 
+/** Единый переиспользуемый экземпляр CCXT Bybit с увеличенным таймаутом для функций ликвидности */
+const sharedCcxtBybit = new ccxt.bybit({
+  timeout: 30000,
+  enableRateLimit: true,
+});
+
 /**
  * Определение "линии лежачей ликвидности" через книгу ордеров CEX.
  * Выявляет кластеры значительных объемов среди покупателей (поддержка) и продавцов (сопротивление).
@@ -767,7 +773,7 @@ export class BybitService {
  */
 export async function getLiquidityLine(ticker) {
   try {
-    const exchange = new ccxt.bybit();
+    const exchange = sharedCcxtBybit;
     const baseTicker = ticker.toUpperCase().replace(/USDT$/, '');
     const symbol = `${baseTicker}/USDT`;
 

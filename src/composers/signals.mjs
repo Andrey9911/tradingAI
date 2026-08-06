@@ -76,15 +76,22 @@ export function computeRsi(closes, period = 14) {
   return 100 - 100 / (1 + rs);
 }
 
+/** Единый переиспользуемый экземпляр CCXT Bybit с увеличенным таймаутом (30 сек) и встроенным ограничением запросов */
+const bybitCcxtExchange = new ccxt.bybit({
+  timeout: 30000,
+  enableRateLimit: true,
+});
+
 /**
  * Получение исторических данных и расчет базового технического анализа
  * @param {string} ticker - Тикер монеты (например, 'ENJ')
  * @param {string} timeframe - Таймфрейм свечей (по умолчанию '4h')
  * @param {number} limit - Количество свечей
+ * @returns {Promise<Object>} Данные технического анализа или объект ошибки
  */
 export async function getTechnicalAnalysis(ticker, timeframe = '4h', limit = 200) {
   try {
-    const exchange = new ccxt.bybit();
+    const exchange = bybitCcxtExchange;
     const baseTicker = ticker.toUpperCase().replace(/USDT$/, '');
     const symbol = `${baseTicker}/USDT`;
 
@@ -614,13 +621,13 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
     let walletData = null;
     let topTrades = [];
 
-    if (!isAddress) {
+    if (!tokenData && (!isAddress || type_coin === 'token')) {
       await updateStatus('🕵️ Выполняю DEX поиск токена...');
       searchResults = await tokenDiscovery.fetchDexScreenerTokenByQuery(ticker, updateStatus);
-      tokenData = searchResults.find(t => t.symbol.toUpperCase() === ticker.toUpperCase()) || null;
+      tokenData = searchResults.find(t => t.address.toLowerCase() === ticker.toLowerCase() || t.symbol.toUpperCase() === ticker.toUpperCase()) || searchResults[0] || null;
     }
 
-    if (tokenData) {
+    if (tokenData && type_coin === 'token') {
       await updateStatus('🧠 Собираю on-chain данные о кошельках и кластерах...');
       const [walletRes, tradesRes] = await Promise.all([
         walletIntel.analyzeToken(tokenData, updateStatus).catch(() => null),
@@ -651,43 +658,28 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
       liquidityClusters: liquidityClusters,
       derivatives: deriv,
       news: newsSentiment,
-      onchain: tokenData ? {
+      onchain: tokenData && walletData ? {
         token: tokenData,
-        wallets: walletData,
+        riskLevel: walletData.riskLevel,
+        features: walletData.features || [],
+        fundingCluster: walletData.fundingCluster,
+        sniperBehavior: walletData.sniperBehavior,
+        transferPattern: walletData.transferPattern,
+        holderDistribution: walletData.holderDistribution,
+        walletAgeDays: walletData.walletAgeDays,
+        firstFundingSource: walletData.firstFundingSource,
+        connectedWallets: walletData.connectedWallets,
+        previousTokens: walletData.previousTokens,
+        previousRugpulls: walletData.previousRugpulls,
+        devWallet: walletData.devWallet,
+        realizedProfit: walletData.realizedProfit,
+        knowledgeGraph: walletData.knowledgeGraph,
+        summary: walletData.summary,
         topRecentTrades: topTrades
       } : null
     };
 
-    // Use AI to evaluate
-    const prompt = `Проанализируй предоставленный сигнал на краткосрочную позицию от пользователя и собранные данные.
-Сигнал: ${description}
-Собранные данные: ${JSON.stringify(aggregatedData)}
-
-В объекте "technical_analysis" находится готовая выжимка графика: тренд по средним (EMA), индикатор RSI, а также ближайшие локальные уровни поддержки и сопротивления.
-В объекте "liquidityClusters" — кластеры крупной ликвидности из книги ордеров CEX (bid-кластеры = уровни поддержки, ask-кластеры = сопротивление). Обрати внимание на bid/ask imbalance и расстояние кластеров от текущей цены.
-Твоя задача — синтезировать эту техническую картину с фундаментальными рисками (новости, on-chain метрики, фандинг).
-
-В конце своего предложения давай совет, стоит ли открывать позицию long/short, 
-
-Дай вердикт (BUY/SELL/WAIT) и краткое обоснование (не более 1000 символов, на русском). Отвечай только валидным JSON: {"verdict": "VERDICT", "reason": "reason"}`;
-    
-    let aiResponse;
-    try {
-      const aiRaw = await ai.chatWithModelFallback({
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 20000,
-        temperature: 0.3
-      }, updateStatus);
-      
-      const rawMatch = aiRaw.choices[0].message.content.match(/\{[\s\S]*\}/);
-      if (rawMatch) {
-         aiResponse = JSON.parse(rawMatch[0]);
-      } else {
-         aiResponse = { verdict: 'UNKNOWN', reason: 'Не удалось разобрать ответ нейросети.' };
-      }
-    } catch (e) {
-      aiResponse = { verdict: 'ERROR', reason: 'Ошибка при обращении к нейросети.' };
-    }
+    const aiResponse = await ai.evaluateDiscoveredToken(aggregatedData, updateStatus);
 
     // Форматирование Whale Tracker
     const chain = String(tokenData?.chain || '').toLowerCase().trim();
@@ -718,7 +710,8 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
     }
 
     let report = '';
-    const aiStatusEmoji = aiResponse.verdict === 'BUY' ? '🟢' : aiResponse.verdict === 'SELL' ? '🔴' : '🟡';
+    const vUpper = String(aiResponse.verdict || '').toUpperCase();
+    const aiStatusEmoji = ['BUY', 'ПОКУПАТЬ', 'ПОКУПКА'].includes(vUpper) ? '🟢' : (['SELL', 'ПРОДАВАТЬ', 'ПРОДАЖА'].includes(vUpper) ? '🔴' : (['AVOID', 'ИЗБЕГАТЬ'].includes(vUpper) ? '⛔' : '🟡'));
     const aiStatusText = aiResponse.verdict;
     const fullAiVerdictText = escapeHtml(aiResponse.reason);
 

@@ -40,9 +40,11 @@ function tokenUrl(token) {
 }
 
 function verdictTag(verdict) {
-  if (verdict === 'BUY') return '🟢 BUY';
-  if (verdict === 'AVOID') return '🔴 AVOID';
-  return '🟡 WAIT';
+  const v = String(verdict || '').toUpperCase();
+  if (v === 'BUY' || v === 'ПОКУПАТЬ' || v === 'ПОКУПКА') return '🟢 ПОКУПАТЬ';
+  if (v === 'SELL' || v === 'ПРОДАВАТЬ' || v === 'ПРОДАЖА') return '🔴 ПРОДАВАТЬ';
+  if (v === 'AVOID' || v === 'ИЗБЕГАТЬ') return '🔴 ИЗБЕГАТЬ';
+  return '🟡 ЖДАТЬ';
 }
 
 function riskTag(riskLevel) {
