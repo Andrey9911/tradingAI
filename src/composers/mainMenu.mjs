@@ -7,19 +7,21 @@ import { showSettingsMenu } from './settings.mjs';
 import { runWeb3Discovery } from './web3Discovery.mjs';
 import { showAutopostingMenu } from './autoposting.mjs';
 import { getAssetType } from './signals.mjs';
+import { runTradeBehaviorAnalysis } from './tradeBehaviorAnalysis.mjs';
 
 
 export const mainMenuComposer = new Composer();
 
 export function buildMainMenuKeyboard() {
   return new Keyboard()
-    .text('💰 Активы')
-    .text('📊 Лимитные ордера').row()
+    .text('💰 Активы').row()
+    // .text('📊 Лимитные ордера').row()
     .text('🔍 Поиск сигналов')
+    .text('🧬 Web3 top-10').row()
     .text('⚙️ Настройки')
-    .text('🧬 Web3 top-10')
     .text('📣 Автопостинг').row()
     .text('⚡ Позиции (фьючи)')
+    .text('📊 Анализ сделок').row()
     .resized();
 }
 
@@ -100,6 +102,9 @@ mainMenuComposer.on('message:text', async (ctx, next) => {
   }
   if (ctx.message.text === '⚡ Позиции (фьючи)') {
     await ctx.reply('⚡ Фьючерсные позиции — функционал в разработке (скоро).');
+  }
+  if (ctx.message.text === '📊 Анализ сделок') {
+    await runTradeBehaviorAnalysis(ctx);
   }
   if (ctx.message.text === '🤖 AI анализ мемок') {
     // await runAiSignal(ctx);  //TODO: Добавить обработку мемок

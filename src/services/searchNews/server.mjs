@@ -1,110 +1,110 @@
-import express from 'express';
-import cors from 'cors';
-import { SentimentIntensityAnalyzer } from 'vader-sentiment';
 import fetch from 'node-fetch';
 
-// --- Конфигурация ---
-const CRYPTOPANIC_API_KEY = "YOUR_API_KEY_HERE"; // Замените на ваш ключ
-const PORT = process.env.PORT || 3001;
-// ------------------
+const CACHE_TTL_MS = Math.max(60_000, Number(process.env.NEWS_CACHE_TTL_MS || 10 * 60_000));
+const CACHE_MAX_ENTRIES = Math.max(10, Number(process.env.NEWS_CACHE_MAX_ENTRIES || 100));
+const REQUEST_TIMEOUT_MS = Math.max(2_000, Number(process.env.NEWS_REQUEST_TIMEOUT_MS || 8_000));
+const cache = new Map();
+const pending = new Map();
+const sourceQueues = new Map();
+const sourceLastRequestAt = new Map();
+const SOURCE_MIN_INTERVAL_MS = Math.max(250, Number(process.env.NEWS_SOURCE_MIN_INTERVAL_MS || 1_200));
 
-const app = express();
-app.use(cors()); // Разрешаем запросы с любых источников
+const MARKET_SECTORS = [
+  'bitcoin', 'crypto regulation', 'SEC', 'oil', 'Brent', 'OPEC', 'Iran oil',
+  'Trump tariffs', 'MiCA', 'stablecoin', 'interest rates', 'inflation',
+];
 
-// Инициализируем VADER анализатор
-const vader = new SentimentIntensityAnalyzer();
-
-// Функция для анализа заголовка с помощью VADER
-function analyzeSentiment(text) {
-    const result = vader.polarity_scores(text);
-    const compound = result.compound;
-    
-    if (compound >= 0.05) return 'positive';
-    if (compound <= -0.05) return 'negative';
-    return 'neutral';
+function cacheKey(topic) { return String(topic || 'market').trim().toUpperCase(); }
+function pruneCache() {
+  if (cache.size <= CACHE_MAX_ENTRIES) return;
+  const oldest = [...cache.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+  for (const [key] of oldest.slice(0, cache.size - CACHE_MAX_ENTRIES)) cache.delete(key);
+}
+async function fetchJson(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally { clearTimeout(timer); }
+}
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+/** Serializes provider calls to remain below API rate limits even for different coins. */
+function fetchProviderJson(provider, url) {
+  const previous = sourceQueues.get(provider) || Promise.resolve();
+  const request = previous.catch(() => {}).then(async () => {
+    const elapsed = Date.now() - (sourceLastRequestAt.get(provider) || 0);
+    if (elapsed < SOURCE_MIN_INTERVAL_MS) await sleep(SOURCE_MIN_INTERVAL_MS - elapsed);
+    sourceLastRequestAt.set(provider, Date.now());
+    return fetchJson(url);
+  });
+  sourceQueues.set(provider, request);
+  return request;
+}
+function gdeltQuery(topic) {
+  const terms = [topic, ...MARKET_SECTORS].filter(Boolean).map((term) => `"${String(term).replace(/"/g, '')}"`);
+  return `(${terms.join(' OR ')})`;
+}
+function normalizeGdeltDate(value) {
+  const raw = String(value || '');
+  const match = raw.match(/^(\d{4})(\d{2})(\d{2})T?(\d{2})(\d{2})(\d{2})Z?$/);
+  if (!match) return raw || null;
+  const [, year, month, day, hour, minute, second] = match;
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}Z`;
+}
+function asGdeltArticle(article) {
+  return {
+    id: `gdelt:${article.url || article.title || Math.random()}`,
+    source: 'gdelt', title: article.title || '', description: article.seendate || '',
+    url: article.url || '', publishedAt: normalizeGdeltDate(article.seendate),
+    sourceName: article.domain || 'GDELT', language: article.language || 'en',
+  };
+}
+function asMarketauxArticle(article) {
+  return {
+    id: `marketaux:${article.uuid || article.url || article.title || Math.random()}`,
+    source: 'marketaux', title: article.title || '', description: article.description || '',
+    url: article.url || '', publishedAt: article.published_at || null,
+    sourceName: article.source || 'Marketaux', language: article.language || 'en',
+    entities: article.entities || [],
+  };
+}
+async function getGdelt(topic) {
+  const params = new URLSearchParams({ query: gdeltQuery(topic), mode: 'ArtList', format: 'json', maxrecords: '50', timespan: process.env.GDELT_TIMESPAN || '24h', sort: 'HybridRel' });
+  const data = await fetchProviderJson('gdelt', `https://api.gdeltproject.org/api/v2/doc/doc?${params}`);
+  return Array.isArray(data.articles) ? data.articles.map(asGdeltArticle) : [];
+}
+async function getMarketaux(topic) {
+  const token = process.env.MARKETAUX_API_TOKEN;
+  if (!token) return [];
+  const params = new URLSearchParams({ api_token: token, search: `${topic} ${MARKET_SECTORS.join(' ')}`, language: 'en', limit: '50' });
+  const data = await fetchProviderJson('marketaux', `https://api.marketaux.com/v1/news/all?${params}`);
+  return Array.isArray(data.data) ? data.data.map(asMarketauxArticle) : [];
 }
 
-// --- Эндпоинт ---
-app.get('/analyze', async (req, res) => {
-    const topic = req.query.topic;
-    
-    if (!topic) {
-        return res.status(400).json({ error: 'Missing topic parameter' });
-    }
-    
-    if (!CRYPTOPANIC_API_KEY || CRYPTOPANIC_API_KEY === "YOUR_API_KEY_HERE") {
-        // Возвращаем заглушку, если ключ не настроен
-        return res.json({
-            topic: topic.toUpperCase(),
-            positive: 0,
-            negative: 0,
-            neutral: 0,
-            overall: 'neutral',
-            total: 0
-        });
-    }
-    
-    try {
-        // Параметры запроса к CryptoPanic API
-        const params = new URLSearchParams({
-            auth_token: CRYPTOPANIC_API_KEY,
-            currencies: topic.toUpperCase(),
-            kind: 'news',
-            public: 'true',
-            filter: 'hot' // 'rising', 'hot' или 'all'
-        });
-        
-        const response = await fetch(`https://cryptopanic.com/api/v1/posts/?${params}`);
-        
-        if (!response.ok) {
-            throw new Error(`CryptoPanic API error: ${response.status} ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        const articles = data.results || [];
-        
-        let positive = 0, negative = 0, neutral = 0;
-        
-        for (const item of articles) {
-            const title = item.title;
-            if (!title) continue;
-            
-            const sentiment = analyzeSentiment(title);
-            if (sentiment === 'positive') positive++;
-            else if (sentiment === 'negative') negative++;
-            else neutral++;
-        }
-        
-        const total = positive + negative + neutral;
-        let overall = 'neutral';
-        
-        if (total > 0) {
-            if (positive > negative + (total * 0.2)) {
-                overall = 'bullish';
-            } else if (negative > positive + (total * 0.2)) {
-                overall = 'bearish';
-            } else {
-                overall = 'neutral';
-            }
-        }
-        
-        res.json({
-            topic: topic.toUpperCase(),
-            positive,
-            negative,
-            neutral,
-            overall,
-            total
-        });
-        
-    } catch (error) {
-        console.error('Error analyzing news:', error);
-        res.status(500).json({ error: 'Failed to fetch or analyze news' });
-    }
-});
+/** Gets raw news from at most one GDELT and one Marketaux request per cache window. */
+export async function fetchNewsArticles(topic) {
+  const key = cacheKey(topic);
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.updatedAt < CACHE_TTL_MS) return { articles: cached.articles, cache: 'hit', sourceErrors: cached.sourceErrors };
+  if (pending.has(key)) return pending.get(key);
+  const operation = (async () => {
+    const [gdelt, marketaux] = await Promise.allSettled([getGdelt(key), getMarketaux(key)]);
+    const articles = [
+      ...(gdelt.status === 'fulfilled' ? gdelt.value : []),
+      ...(marketaux.status === 'fulfilled' ? marketaux.value : []),
+    ];
+    const sourceErrors = [gdelt, marketaux].flatMap((result, index) => result.status === 'rejected' ? [{ source: index === 0 ? 'gdelt' : 'marketaux', message: result.reason?.message || 'request failed' }] : []);
+    if (!articles.length && cached) return { articles: cached.articles, cache: 'stale', sourceErrors };
+    cache.set(key, { articles, sourceErrors, updatedAt: Date.now() });
+    pruneCache();
+    return { articles, cache: 'miss', sourceErrors };
+  })();
+  pending.set(key, operation);
+  try { return await operation; } finally { pending.delete(key); }
+}
 
-// --- Запуск сервера ---
-app.listen(PORT, () => {
-    console.log(`🔍 Crypto News Sentiment Server running on http://localhost:${PORT}`);
-    console.log(`📍 Example: http://localhost:${PORT}/analyze?topic=SOL`);
-});
+export function getNewsCacheStatus() {
+  return { entries: cache.size, ttlMs: CACHE_TTL_MS, inflight: pending.size };
+}

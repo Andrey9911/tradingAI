@@ -5,6 +5,8 @@ import { InlineKeyboard } from 'grammy';
 import { getNewsSentiment } from '../services/searchNews/searchNews.mjs';
 import { TokenDiscoveryService } from '../services/tokenDiscoveryService.mjs';
 import { WalletIntelService } from '../services/walletIntelService.mjs';
+import { GeckoOhlcvService } from '../services/geckoOhlcvService.mjs';
+import { getTopTrades } from '../services/topTradesService.mjs';
 import ccxt from 'ccxt';
 import { RSI, EMA } from 'technicalindicators';
 
@@ -30,7 +32,7 @@ const NATIVE_COINS = [
   "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "AVAX", "TRX", "DOT", "LINK",
   "SUI", "APT", "NEAR", "TON", "ATOM", "LTC", "BCH", "XLM", "ALGO", "ICP",
   "FIL", "ETC", "XMR", "HBAR", "VET", "KAS", "SEI", "TIA", "INJ", "FTM",
-  "POL", "ARB", "OP", "STRK", "MANTA", "METIS", "RON", "SMR", "CORE", "KLAY"
+  "POL", "ARB", "OP", "STRK", "MANTA", "METIS", "RON", "SMR", "CORE", "KLAY","ENA","PEPE","ZEC"
 ];
 
 
@@ -52,12 +54,25 @@ export function getAssetType(inputTicker) {
     return "token";
   }
 }
+
+function resolveAnalysisRoute(inputTicker, isAddress) {
+  if (isAddress) return 'DEX_ONLY';
+  const normalized = String(inputTicker || '').trim().toUpperCase().replace(/\/USDT$/, '').replace(/USDT$/, '');
+  return getAssetType(normalized) === 'native' ? 'CEX_ONLY' : 'DEX_DISCOVERY';
+}
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 }
+
 
 /** RSI(14) по ряду закрытий (от старых к новым) */
 export function computeRsi(closes, period = 14) {
@@ -78,7 +93,7 @@ export function computeRsi(closes, period = 14) {
 
 /** Единый переиспользуемый экземпляр CCXT Bybit с увеличенным таймаутом (30 сек) и встроенным ограничением запросов */
 const bybitCcxtExchange = new ccxt.bybit({
-  timeout: 30000,
+  timeout: 50000,
   enableRateLimit: true,
 });
 
@@ -140,6 +155,80 @@ export async function getTechnicalAnalysis(ticker, timeframe = '4h', limit = 200
   } catch (err) {
     console.error(`Ошибка в getTechnicalAnalysis для ${ticker}:`, err.message);
     return { error: 'Не удалось рассчитать ТА' };
+  }
+}
+
+export async function getBtcCorrelation(ticker, timeframe = '1h', period = 100) {
+  try {
+    const tokenBase = String(ticker || '').toUpperCase().replace(/USDT$/, '');
+    if (!tokenBase || tokenBase === 'BTC') return null;
+    const [btcCandles, tokenCandles] = await Promise.all([
+      bybitCcxtExchange.fetchOHLCV('BTC/USDT', timeframe, undefined, period),
+      bybitCcxtExchange.fetchOHLCV(`${tokenBase}/USDT`, timeframe, undefined, period),
+    ]);
+    const btcMap = new Map((btcCandles || []).map(c => [Number(c[0]), Number(c[4])]));
+    const tokenMap = new Map((tokenCandles || []).map(c => [Number(c[0]), Number(c[4])]));
+    const timestamps = [...btcMap.keys()].filter(ts => tokenMap.has(ts)).sort((a, b) => a - b);
+    const btcCloses = timestamps.map(ts => btcMap.get(ts));
+    const tokenCloses = timestamps.map(ts => tokenMap.get(ts));
+    const btcReturns = [];
+    const tokenReturns = [];
+    for (let i = 1; i < timestamps.length; i += 1) {
+      if (btcCloses[i - 1] <= 0 || tokenCloses[i - 1] <= 0) continue;
+      const btcReturn = btcCloses[i] / btcCloses[i - 1] - 1;
+      const tokenReturn = tokenCloses[i] / tokenCloses[i - 1] - 1;
+      if (Number.isFinite(btcReturn) && Number.isFinite(tokenReturn)) {
+        btcReturns.push(btcReturn);
+        tokenReturns.push(tokenReturn);
+      }
+    }
+    if (btcReturns.length < 3) return null;
+    const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length;
+    const btcMean = mean(btcReturns);
+    const tokenMean = mean(tokenReturns);
+    let covariance = 0;
+    let btcVariance = 0;
+    let tokenVariance = 0;
+    for (let i = 0; i < btcReturns.length; i += 1) {
+      const btcDelta = btcReturns[i] - btcMean;
+      const tokenDelta = tokenReturns[i] - tokenMean;
+      covariance += btcDelta * tokenDelta;
+      btcVariance += btcDelta ** 2;
+      tokenVariance += tokenDelta ** 2;
+    }
+    const denominator = Math.sqrt(btcVariance * tokenVariance);
+    const pearson = denominator > 0 ? covariance / denominator : 0;
+    const beta = btcVariance > 0 ? covariance / btcVariance : 0;
+    const changePct = (closes, bars) => closes.length > bars && closes.at(-1 - bars) > 0
+      ? ((closes.at(-1) / closes.at(-1 - bars)) - 1) * 100
+      : null;
+    const ema20 = EMA.calculate({ values: btcCloses, period: 20 });
+    const ema50 = EMA.calculate({ values: btcCloses, period: 50 });
+    const btcTrend = ema20.length && ema50.length
+      ? (ema20.at(-1) > ema50.at(-1) ? 'BULLISH' : ema20.at(-1) < ema50.at(-1) ? 'BEARISH' : 'NEUTRAL')
+      : 'NEUTRAL';
+    const regime = pearson >= 0.70 ? 'BTC_HIGH_CORRELATION' : pearson >= 0.40 ? 'BTC_MEDIUM_CORRELATION' : 'BTC_LOW_CORRELATION';
+    const roundedChange = (closes, bars) => {
+      const value = changePct(closes, bars);
+      return value == null ? null : Number(value.toFixed(4));
+    };
+    return {
+      timeframe,
+      period,
+      pearson: Number(pearson.toFixed(4)),
+      beta: Number(beta.toFixed(4)),
+      btcChange1h: roundedChange(btcCloses, 1),
+      btcChange4h: roundedChange(btcCloses, 4),
+      btcChange24h: roundedChange(btcCloses, 24),
+      tokenChange1h: roundedChange(tokenCloses, 1),
+      tokenChange4h: roundedChange(tokenCloses, 4),
+      tokenChange24h: roundedChange(tokenCloses, 24),
+      regime,
+      btcTrend,
+    };
+  } catch (err) {
+    console.warn(`BTC correlation unavailable for ${ticker}:`, err.message);
+    return null;
   }
 }
 
@@ -461,74 +550,11 @@ function compactAddress(address) {
   return address ? String(address).trim() : '';
 }
 
-async function getTopTrades(tokenData, priceUsd, timeoutMs = 8000) {
-  if (!tokenData || !tokenData.address) return [];
-  const chain = String(tokenData.chain || '').toLowerCase().trim();
-  const tokenAddress = tokenData.address;
-  
-  try {
-    if (chain === 'robinhood' || chain === 'robinhood-chain' || chain === 'rh-evm') {
-      const explorerApiUrl = process.env.EXPLORER_API_URL || 'https://robinhoodchain.blockscout.com/api';
-      const url = `${explorerApiUrl}?module=account&action=tokentx&contractaddress=${tokenAddress}&page=1&offset=100&sort=desc`;
-      const res = await fetch(url, { headers: { 'accept': 'application/json' } });
-      const json = await res.json();
-      const transfers = json?.result || [];
-      
-      const pairAddr = String(tokenData.pairAddress || '').toLowerCase();
-      const decimals = parseInt(tokenData.decimals || '18', 10);
-      
-      const mapped = transfers.map(tx => {
-        const fromAddr = String(tx.from || '').toLowerCase();
-        const toAddr = String(tx.to || '').toLowerCase();
-        const kind = (toAddr === pairAddr) ? 'sell' : 'buy';
-        const rawAmount = parseFloat(tx.value || '0');
-        const amount = rawAmount / (10 ** (parseInt(tx.tokenDecimal, 10) || decimals || 18));
-        const volumeUsd = amount * (priceUsd || parseFloat(tokenData.price) || 0);
-        
-        return {
-          kind,
-          volumeUsd,
-          amount
-        };
-      });
-      
-      return mapped
-        .filter(t => t.volumeUsd > 0)
-        .sort((a, b) => b.volumeUsd - a.volumeUsd)
-        .slice(0, 5);
-    } else {
-      const network = chain === 'sol' ? 'solana' : chain;
-      const url = `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${tokenAddress}/trades`;
-      const res = await fetch(url, {
-        headers: {
-          'accept': 'application/json;version=20230203'
-        }
-      });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      const json = await res.json();
-      const trades = json?.data || [];
-      
-      const mapped = trades.map(t => {
-        const attrs = t.attributes || {};
-        const volumeUsd = parseFloat(attrs.volume_in_usd || '0');
-        const amount = parseFloat(attrs.from_token_amount || attrs.to_token_amount || '0');
-        const kind = attrs.kind || 'buy';
-        return {
-          kind,
-          volumeUsd,
-          amount
-        };
-      });
-      
-      return mapped
-        .filter(t => t.volumeUsd > 0)
-        .sort((a, b) => b.volumeUsd - a.volumeUsd)
-        .slice(0, 5);
-    }
-  } catch (err) {
-    console.warn(`⚠️ Error fetching top trades: ${err.message}`);
-    return [];
-  }
+function extractFeatureValue(val, fallback = 'UNKNOWN') {
+  if (!val) return fallback;
+  if (typeof val === 'string') return val;
+  if (typeof val === 'object') return val.value || val.name || fallback;
+  return String(val);
 }
 
 export async function runUserSignalAnalysis(ctx, ticker, description, direction = null, type_coin) {
@@ -567,14 +593,16 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
     
     // Smart Input Resolver: detect if ticker is a contract address
     const isAddress = /^0x[a-fA-F0-9]{40}$/.test(ticker.trim()) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(ticker.trim());
+    const analysisRoute = resolveAnalysisRoute(ticker, isAddress);
     let resolvedTicker = ticker.trim();
     let tokenData = null;
     let searchResults = [];
 
-    const tokenDiscovery = new TokenDiscoveryService();
-    const walletIntel = new WalletIntelService();
+    const tokenDiscovery = analysisRoute === 'CEX_ONLY' ? null : new TokenDiscoveryService();
+    const walletIntel = analysisRoute === 'CEX_ONLY' ? null : new WalletIntelService();
+    const geckoOhlcv = analysisRoute === 'CEX_ONLY' ? null : new GeckoOhlcvService();
 
-    if (isAddress) {
+    if (analysisRoute === 'DEX_ONLY') {
       if(type_coin === 'token'){
 
         await updateStatus('🕵️ Обнаружен контракт-адрес. Запрашиваю информацию о токене на DEX...');
@@ -601,7 +629,14 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
       deriv,
       newsSentiment,
       technicalAnalysis,
-      liquidityClusters
+      liquidityClusters,
+      btcCorrelation,
+      recentTrades,
+      fundingHistory,
+      spotInstrument,
+      linearInstrument,
+      technicalAnalysis1h,
+      technicalAnalysis1d
     ] = await Promise.all([
       bybit.getCurrentPrice(symbol).catch(() => null),
       bybit.getKlineHourlyData(symbol, 30).catch(() => ({ closes: [], volumeSpike: 0 })),
@@ -611,31 +646,46 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
       bybit.getDerivativesContext(symbol).catch(() => ({ fundingRate: null, oiChangePct: null, lsRatio: null })),
       getNewsSentiment(baseTicker).catch(() => null),
       getTechnicalAnalysis(baseTicker, '4h').catch(() => ({ error: 'Не удалось рассчитать ТА' })),
-      getLiquidityLine(baseTicker).catch(() => null)
+      getLiquidityLine(baseTicker).catch(() => null),
+      getBtcCorrelation(baseTicker, '1h', 100).catch(() => null),
+      bybit.getRecentTrades(symbol, 'spot', 100).catch(() => []),
+      bybit.getFundingRateHistory(symbol, 20).catch(() => []),
+      bybit.getInstrumentInfo(symbol, 'spot').catch(() => null),
+      bybit.getInstrumentInfo(symbol, 'linear').catch(() => null),
+      getTechnicalAnalysis(baseTicker, '1h').catch(() => ({ error: 'TA unavailable' })),
+      getTechnicalAnalysis(baseTicker, '1d').catch(() => ({ error: 'TA unavailable' }))
     ]);
 
     const { closes, volumeSpike } = klineData || { closes: [], volumeSpike: 0 };
     const rsi14 = computeRsi(closes, 14);
+    const taTimeframes = { '1h': technicalAnalysis1h, '4h': technicalAnalysis, '1d': technicalAnalysis1d };
+    const completenessScore = Number(([
+      Number.isFinite(currentPrice), closes.length >= 15, spreadPct != null,
+      recentTrades.length > 0, deriv?.fundingRate != null || deriv?.oiChangePct != null,
+    ].filter(Boolean).length / 5).toFixed(2));
 
-    // 2. DEX Token & Wallet Intelligence
+    // 2. DEX Token & Wallet Intelligence + DEX OHLCV TA
     let walletData = null;
     let topTrades = [];
+    let dexTechnicalAnalysis = null;
 
-    if (!tokenData && (!isAddress || type_coin === 'token')) {
+    if (analysisRoute === 'DEX_DISCOVERY') {
       await updateStatus('🕵️ Выполняю DEX поиск токена...');
       searchResults = await tokenDiscovery.fetchDexScreenerTokenByQuery(ticker, updateStatus);
       tokenData = searchResults.find(t => t.address.toLowerCase() === ticker.toLowerCase() || t.symbol.toUpperCase() === ticker.toUpperCase()) || searchResults[0] || null;
     }
 
-    if (tokenData && type_coin === 'token') {
-      await updateStatus('🧠 Собираю on-chain данные о кошельках и кластерах...');
-      const [walletRes, tradesRes] = await Promise.all([
+    if (analysisRoute !== 'CEX_ONLY' && tokenData && type_coin === 'token') {
+      await updateStatus('🧠 Собираю on-chain данные, история сделок и ТА по свечам (30m, 1h, 4h, 1w)...');
+      const [walletRes, tradesRes, taRes] = await Promise.all([
         walletIntel.analyzeToken(tokenData, updateStatus).catch(() => null),
-        getTopTrades(tokenData, tokenData.price || currentPrice).catch(() => [])
+        getTopTrades(tokenData, tokenData.price || currentPrice).catch(() => []),
+        geckoOhlcv.analyzeTokenTechnicalAnalysis(tokenData.chain, tokenData.address, tokenData.pairAddress).catch(() => null),
       ]);
       walletData = walletRes;
       topTrades = tradesRes;
-    } else {
+      dexTechnicalAnalysis = taRes;
+    } else if (analysisRoute !== 'CEX_ONLY') {
       await updateStatus('⚠️ Токен не найден в DEX сетях, продолжаем анализ с CEX данными.');
     }
 
@@ -647,14 +697,27 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
       direction,
       description,
       market: {
-        price: currentPrice,
-        change24h,
-        volume24h,
+        price: currentPrice || tokenData?.price,
+        change24h: change24h || tokenData?.priceChange24h,
+        volume24h: volume24h || tokenData?.volume24h,
         rsi14,
         spreadPct,
         volumeSpike,
       },
       technical_analysis: technicalAnalysis,
+      technical_analysis_timeframes: taTimeframes,
+      cex_analysis: {
+        route: analysisRoute,
+        exchange: 'Bybit',
+        symbol,
+        spotInstrument,
+        linearInstrument,
+        recentTrades,
+        fundingHistory,
+        completenessScore,
+      },
+      btcCorrelation,
+      dex_technical_analysis: dexTechnicalAnalysis,
       liquidityClusters: liquidityClusters,
       derivatives: deriv,
       news: newsSentiment,
@@ -709,27 +772,47 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
       top5List = '<i>Транзакции не найдены</i>';
     }
 
-    let report = '';
+    // Форматирование DEX ТА по свечам (30m, 1h, 4h, 1w)
+    let dexTaReport = '';
+    if (dexTechnicalAnalysis && dexTechnicalAnalysis.timeframes && Object.keys(dexTechnicalAnalysis.timeframes).length > 0) {
+      dexTaReport = `<b>📈 Технический анализ по свечам (GeckoTerminal):</b>\n`;
+      const tfKeys = ['30m', '1h', '4h', '1w'];
+      for (const tf of tfKeys) {
+        const item = dexTechnicalAnalysis.timeframes[tf];
+        if (item && item.currentPrice !== null) {
+          const rsiStr = item.rsi != null ? `RSI: ${item.rsi}` : 'RSI: —';
+          const suppResStr = (item.support != null && item.resistance != null) ? ` | Поддержка: ${item.support} / Сопр: ${item.resistance}` : '';
+          dexTaReport += `• <b>${tf}:</b> ${item.trend} | ${rsiStr}${suppResStr}\n`;
+        }
+      }
+      dexTaReport += `\n`;
+    }
+
+    let report = 'Вердикт загружается';
     const vUpper = String(aiResponse.verdict || '').toUpperCase();
     const aiStatusEmoji = ['BUY', 'ПОКУПАТЬ', 'ПОКУПКА'].includes(vUpper) ? '🟢' : (['SELL', 'ПРОДАВАТЬ', 'ПРОДАЖА'].includes(vUpper) ? '🔴' : (['AVOID', 'ИЗБЕГАТЬ'].includes(vUpper) ? '⛔' : '🟡'));
     const aiStatusText = aiResponse.verdict;
     const fullAiVerdictText = escapeHtml(aiResponse.reason);
 
-    if (tokenData) {
+    if (analysisRoute !== 'CEX_ONLY' && tokenData) {
+      console.log('Token Data:', tokenData);
       const addressShort = shortAddress(tokenData.address);
       const liquidityStr = tokenData.liquidityUsd ? tokenData.liquidityUsd.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '0';
       const ageMin = Math.round(tokenData.ageMinutes || 0);
       const riskLevel = walletData?.riskLevel || 'UNKNOWN';
-      const pattern = walletData?.transferPattern || 'UNKNOWN';
+      const pattern = extractFeatureValue(walletData?.transferPattern, 'UNKNOWN');
       const chainStr = String(tokenData.chain || '').toUpperCase();
 
-      report = `<b>🤖 Анализ актива:</b> ${tokenData.symbol} / ${addressShort}\n`;
+      report = `<b>🤖 Анализ актива:</b> ${escapeHtml(tokenData.symbol)} / ${addressShort}\n`;
       report += `<i>Пользовательское описание: ${escapeHtml(description)}</i>\n\n`;
       report += `<b>📊 On-chain метрики (${chainStr}):</b>\n`;
       report += `💧 <b>Ликвидность:</b> $${liquidityStr}\n`;
       report += `⏳ <b>Возраст пула:</b> ${ageMin} мин\n`;
       report += `⚠️ <b>Риск-профиль:</b> ${riskLevel} (LOW/MEDIUM/HIGH)\n`;
       report += `🔄 <b>Паттерн:</b> ${pattern}\n\n`;
+      if (dexTaReport) {
+        report += `${escapeHtml(dexTaReport)}`;
+      }
       report += `<b>🐋 Топ-5 недавних транзакций:</b>\n${top5List}\n\n`;
       report += `<b>🧠 Вердикт ИИ: ${aiStatusEmoji} ${aiStatusText}</b>\n`;
       report += `<blockquote expandable>${fullAiVerdictText}</blockquote>`;
@@ -759,4 +842,3 @@ export async function runUserSignalAnalysis(ctx, ticker, description, direction 
     await ctx.reply(`❌ Ошибка анализа: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
   }
 }
-

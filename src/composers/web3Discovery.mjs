@@ -65,6 +65,29 @@ function formatOptionalNumber(value, suffix = '') {
   return `${value}${suffix}`;
 }
 
+function extractFeatureValue(val, fallback = '') {
+  if (!val) return fallback;
+  if (typeof val === 'string') return val;
+  if (typeof val === 'object') return val.value || val.name || fallback;
+  return String(val);
+}
+
+function formatTechnicalAnalysis(ta) {
+  if (!ta || !ta.timeframes || Object.keys(ta.timeframes).length === 0) return '';
+  const parts = [];
+  const tfKeys = ['30m', '1h', '4h', '1w'];
+  for (const tf of tfKeys) {
+    const item = ta.timeframes[tf];
+    if (item && item.currentPrice !== null) {
+      const rsiStr = item.rsi != null ? `RSI ${item.rsi}` : 'RSI —';
+      const trendStr = item.trend ? item.trend.split(' ')[0] : 'Neutral';
+      parts.push(`• <b>${tf}:</b> ${trendStr} | ${rsiStr}`);
+    }
+  }
+  if (!parts.length) return '';
+  return `📈 <b>ТА (GeckoTerminal):</b> ${parts.join(' | ')}\n`;
+}
+
 function formatWalletIntel(walletIntel) {
   if (!walletIntel) return 'WalletIntel: —\n';
   const distribution = walletIntel.holderDistribution || {};
@@ -73,11 +96,14 @@ function formatWalletIntel(walletIntel) {
     ? `cluster YES (${escapeHtml(cluster.source || 'same funding')})`
     : 'cluster no';
 
+  const sniperVal = extractFeatureValue(walletIntel.sniperBehavior, 'NONE');
+  const patternVal = extractFeatureValue(walletIntel.transferPattern, 'unknown');
+
   return (
     `WalletIntel ${walletRiskTag(walletIntel.riskLevel)} | ${clusterText}\n` +
     `Age ${formatOptionalNumber(walletIntel.walletAgeDays, 'd')} | fund ${escapeHtml(walletIntel.firstFundingSource || 'unknown')} | connected ${walletIntel.connectedWallets || 0} | rugpulls ${walletIntel.previousRugpulls || 0}/${walletIntel.previousTokens || 0}\n` +
     `Dev ${escapeHtml(walletIntel.devWallet || '—')} | top holder ${toFixedSafe(distribution.topHolderPct)}% | high supply ${distribution.highSupplyWallets || 0}\n` +
-    `Sniper ${escapeHtml(walletIntel.sniperBehavior || 'NONE')} | ${escapeHtml(walletIntel.transferPattern || 'unknown')} | PnL ${escapeHtml(walletIntel.realizedProfit || '—')} | top5 ${toFixedSafe(distribution.top5Pct)}%\n` +
+    `Sniper ${escapeHtml(sniperVal)} | ${escapeHtml(patternVal)} | PnL ${escapeHtml(walletIntel.realizedProfit || '—')} | top5 ${toFixedSafe(distribution.top5Pct)}%\n` +
     `<i>${escapeHtml(walletIntel.summary || 'wallet intelligence unavailable')}</i>\n`
   );
 }
@@ -88,8 +114,6 @@ function toFixedSafe(value, digits = 1) {
 
 function compactReason(reason) {
   const value = String(reason || '').trim();
-  // if (value.length <= 120) return value;
-  // return `${value.slice(0, 117)}…`;
   return value;
 }
 
@@ -98,7 +122,7 @@ export async function runWeb3Discovery(ctx) {
   const discovery = new TokenDiscoveryService();
   const ai = new AIService();
   const walletIntel = new WalletIntelService();
-  const loading = await ctx.reply('⏳ Сканирую Pump.fun, DexScreener и GeckoTerminal…');
+  const loading = await ctx.reply('⏳ Сканирую DexScreener и GeckoTerminal…');
   let statusText = '🔎 <b>Web3 discovery scanner</b>\n';
 
   const updateStatus = async (line) => {
@@ -151,7 +175,7 @@ export async function runWeb3Discovery(ctx) {
     }
 
     let text = `<b>🧠 Web3 Intelligence: top-${enriched.length}</b>\n`;
-    text += `<i>Источники: Pump.fun, DexScreener, GeckoTerminal. Это AI-отчёт для ручного решения, не авто-торговля.</i>\n\n`;
+    text += `<i>Источники: DexScreener, GeckoTerminal. Это AI-отчёт для ручного решения, не авто-торговля.</i>\n\n`;
     if (researchContext.length) {
       text += `<b>Research context:</b> ${researchContext.length} fresh item(s), last ${escapeHtml(researchContext[0].createdAt)}\n\n`;
     }
@@ -170,6 +194,11 @@ export async function runWeb3Discovery(ctx) {
       tokenText += `🔗 <code>${escapeHtml(shortAddress(token.address))}</code>\n`;
       tokenText += `💰 <b>MC:</b> ${formatUsd(token.marketCap)} | 💧 <b>Liq:</b> ${formatUsd(token.liquidityUsd)} | 📊 <b>Vol:</b> ${formatUsd(token.volume24h)}\n`;
       tokenText += `👥 <b>Holders:</b> ${token.holders} | 📈 <b>B/S:</b> ${token.buys24h}/${token.sells24h} | ⏱ <b>Age:</b> ${Math.round(token.ageMinutes)}m\n`;
+      tokenText += formatTechnicalAnalysis(token.technicalAnalysis);
+      if (token.topTrades && token.topTrades.length > 0) {
+        const tradesStr = token.topTrades.map(t => `${t.kind === 'buy' ? '🟢' : '🔴'} $${t.volumeUsd.toLocaleString('en-US', { maximumFractionDigits: 0 })}`).join(' ');
+        tokenText += `🐋 <b>Top trades:</b> ${tradesStr}\n`;
+      }
       tokenText += `🧠 <i>${escapeHtml(compactReason(token.ai.reason))}</i>\n`;
       tokenText += `<blockquote>${formatWalletIntel(token.walletIntel).trim()}</blockquote>\n\n`;
 

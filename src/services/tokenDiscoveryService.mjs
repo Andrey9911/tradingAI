@@ -262,16 +262,15 @@ export class TokenDiscoveryService {
     this.timeoutMs = timeoutMs;
   }
 
-  /** Агрегирует, фильтрует и сортирует топ токенов из всех доступных DEX-источников. */
+  /** Агрегирует, фильтрует и сортирует топ токенов из доступных DEX-источников (DexScreener, GeckoTerminal). */
   async discoverTopTokens(filters = DEFAULT_DISCOVERY_FILTERS, onStatusUpdate = null, isDisableFiltr) {
-    const [pumpTokens, dexTokens, geckoTokens] = await Promise.all([
+    const [dexTokens, geckoTokens] = await Promise.all([
       this.fetchDexScreenerTokens(onStatusUpdate),
-      this.fetchPumpFunTokens(onStatusUpdate),
       this.fetchGeckoTerminalTokens(onStatusUpdate),
     ]);
 
     const merged = uniqBy(
-      [...pumpTokens, ...dexTokens, ...geckoTokens],
+      [...dexTokens, ...geckoTokens],
       token => `${token.chain}:${token.address || token.pairAddress}`.toLowerCase(),
     );
 

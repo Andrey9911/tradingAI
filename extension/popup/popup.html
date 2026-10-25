@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="popup.css"><title>TradingAI</title></head>
+<body><main>
+  <header><span class="mark">▲</span><div><strong>TradingAI</strong><small>Signal Hub</small></div><button id="settingsButton" class="icon" aria-label="Настройки">⚙</button></header>
+  <nav role="tablist"><button class="tab active" data-tab="home">Главная</button><button class="tab" data-tab="archive">Архив</button><button class="tab" data-tab="parser">ПАРСИНГ</button></nav>
+  <section id="home" class="view active">
+    <div id="detectBox" class="detect"><span id="detectText">Готов к поиску токена на открытой странице.</span><div id="detectedActions" class="hidden"><button id="confirmDetected" class="secondary">Подтвердить</button><button id="dismissDetected" class="icon" aria-label="Закрыть">×</button></div></div>
+    <h1>Анализ сигнала</h1><p>Используйте тикер вручную или найдите его на текущей странице.</p>
+    <form id="analysisForm">
+      <label>Тикер или адрес<input id="ticker" required placeholder="BTC или 0x…" autocomplete="off"></label>
+      <button id="autoAnalyze" class="secondary full" type="button">Автоанализ монеты</button>
+      <section id="screenshotPrompt" class="vision-prompt hidden"><strong>Визуально проанализировать график?</strong><button id="captureChart" class="primary" type="button">Сделать снимок и проанализировать</button></section>
+      <section class="verdict"><div class="heading"><strong>AI Chart Verdict</strong><small id="visionStatus">Снимок ещё не анализировался</small></div><p id="aiVerdict" aria-live="polite">—</p></section>
+      <div class="row"><label>Направление<select id="direction"><option value="">Не указано</option><option value="long">LONG</option><option value="short">SHORT</option></select></label><label>Тип<select id="coinType"><option value="native">Монета</option><option value="token">Токен</option></select></label></div>
+      <button class="primary full" type="submit">Найти сигнал</button>
+    </form><p id="analysisStatus" class="status"></p><footer id="macroWidget">🛢 Нефть: — &nbsp;|&nbsp; 👑 Золото: —</footer>
+  </section>
+  <section id="archive" class="view"><div class="heading"><div><h1>Архив сигналов</h1><p>Только записи с результатом анализа.</p></div><button id="refreshArchive" class="secondary">Обновить</button></div><input id="archiveSearch" placeholder="Поиск по монете или вердикту"><div id="archiveList" class="list"></div></section>
+  <section id="parser" class="view"><h1>ПАРСИНГ</h1><p id="pageMeta">Откройте страницу и загрузите её DOM.</p><div class="row"><button id="loadDom" class="secondary">Структура DOM</button><button id="startPicker" class="primary">Выбрать блок</button></div><details><summary>Виртуальное DOM-дерево (CDP)</summary><pre id="domTree">Ещё не загружено.</pre></details><article id="selection" class="selection hidden"><div class="heading"><strong id="selectedTag">Выбранный блок</strong><button id="clearSelection" class="icon" aria-label="Очистить">×</button></div><code id="selectedSelector"></code><pre id="selectedData"></pre><div class="row"><button class="secondary" disabled title="Интеграция с БД будет добавлена позже">Сохранить в базу</button><button id="clearData" class="danger">Очистить</button></div></article></section>
+  <section id="settings" class="view"><h1>Подключение</h1><p>Токен задаётся на сервере как <code>EXTENSION_API_TOKEN</code>.</p><form id="settingsForm"><label>Адрес сервера<input id="apiBaseUrl" required placeholder="https://bot.example.com"></label><label>Токен расширения<input id="extensionToken" required type="password"></label><label>Telegram user ID<input id="telegramUserId" required inputmode="numeric"></label><button class="primary" type="submit">Сохранить</button></form><p id="settingsStatus" class="status"></p></section>
+</main><script src="popup.js"></script></body></html>

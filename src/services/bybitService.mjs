@@ -194,12 +194,18 @@ export class BybitService {
    * @param {number} limit
    * @returns {Promise<Array<{ t: number, o: number, h: number, l: number, c: number, v: number }>>}
    */
-  async getKlines(symbol, interval = '60', limit = 100) {
+  async getKlines(symbol, interval = '60', limit = 100, {
+    category = 'spot',
+    start = null,
+    end = null,
+  } = {}) {
     const resp = await this.client.getKline({
-      category: 'spot',
+      category,
       symbol,
       interval,
       limit,
+      ...(Number.isFinite(start) ? { start } : {}),
+      ...(Number.isFinite(end) ? { end } : {}),
     });
     if (resp.retCode !== 0 || !resp.result?.list?.length) return [];
     return resp.result.list
@@ -213,6 +219,105 @@ export class BybitService {
       }))
       .filter(k => Number.isFinite(k.c))
       .sort((a, b) => a.t - b.t);
+  }
+
+  /**
+   * Загружает последние закрытые линейные позиции, сохраняя исходные записи Bybit.
+   * Одно закрытие может быть частичным, поэтому объединение позиций выполняется
+   * отдельно только при наличии надёжного идентификатора позиции.
+   * @param {number} limit
+   * @returns {Promise<Array<object>>}
+   */
+  async getRecentClosedLinearPositions(limit = 50) {
+    const target = Math.max(1, Math.min(Number(limit) || 50, 50));
+    const rows = [];
+    let cursor = null;
+
+    while (rows.length < target) {
+      const response = await this.client.getClosedPnL({
+        category: 'linear',
+        limit: Math.min(100, target - rows.length),
+        ...(cursor ? { cursor } : {}),
+      });
+
+      if (response.retCode !== 0) {
+        throw new Error(response.retMsg || 'Не удалось загрузить закрытые позиции Bybit');
+      }
+
+      const list = Array.isArray(response.result?.list) ? response.result.list : [];
+      rows.push(...list);
+      cursor = response.result?.nextPageCursor || null;
+      if (!cursor || list.length === 0) break;
+    }
+
+    return rows
+      .sort((left, right) => Number(right.updatedTime || right.createdTime || 0) - Number(left.updatedTime || left.createdTime || 0))
+      .slice(0, target);
+  }
+
+  /**
+   * Загружает все доступные linear-исполнения в заданном диапазоне времени.
+   * Запросы выполняются последовательно, чтобы не превышать лимиты Bybit.
+   * @param {number} startTime
+   * @param {number} endTime
+   * @returns {Promise<Array<object>>}
+   */
+  async getLinearExecutionHistory(startTime, endTime) {
+    const executions = [];
+    const intervalMs = 7 * 24 * 60 * 60 * 1000;
+
+    for (let rangeStart = startTime; rangeStart <= endTime; rangeStart += intervalMs) {
+      const rangeEnd = Math.min(endTime, rangeStart + intervalMs - 1);
+      let cursor = null;
+      do {
+        const response = await this.client.getExecutionList({
+          category: 'linear',
+          startTime: rangeStart,
+          endTime: rangeEnd,
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        });
+        if (response.retCode !== 0) throw new Error(response.retMsg || 'Не удалось загрузить исполнения Bybit');
+        const list = Array.isArray(response.result?.list) ? response.result.list : [];
+        executions.push(...list);
+        cursor = response.result?.nextPageCursor || null;
+        if (!list.length) break;
+      } while (cursor);
+    }
+
+    return executions.sort((left, right) => Number(left.execTime || 0) - Number(right.execTime || 0));
+  }
+
+  /**
+   * Загружает журнал операций linear для расчёта funding за период позиции.
+   * @param {number} startTime
+   * @param {number} endTime
+   * @returns {Promise<Array<object>>}
+   */
+  async getLinearTransactionHistory(startTime, endTime) {
+    const transactions = [];
+    const intervalMs = 7 * 24 * 60 * 60 * 1000;
+
+    for (let rangeStart = startTime; rangeStart <= endTime; rangeStart += intervalMs) {
+      const rangeEnd = Math.min(endTime, rangeStart + intervalMs - 1);
+      let cursor = null;
+      do {
+        const response = await this.client.getTransactionLog({
+          category: 'linear',
+          startTime: rangeStart,
+          endTime: rangeEnd,
+          limit: 50,
+          ...(cursor ? { cursor } : {}),
+        });
+        if (response.retCode !== 0) throw new Error(response.retMsg || 'Не удалось загрузить журнал операций Bybit');
+        const list = Array.isArray(response.result?.list) ? response.result.list : [];
+        transactions.push(...list);
+        cursor = response.result?.nextPageCursor || null;
+        if (!list.length) break;
+      } while (cursor);
+    }
+
+    return transactions.sort((left, right) => Number(left.transactionTime || 0) - Number(right.transactionTime || 0));
   }
 
   /** Глубина стакана (лучшие уровни) */

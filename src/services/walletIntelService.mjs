@@ -1,6 +1,8 @@
 import { TonService } from './tonService.mjs';
 import { AIService } from './aiService.mjs';
 import { getLiquidityLine } from './bybitService.mjs';
+import { GeckoOhlcvService } from './geckoOhlcvService.mjs';
+import { getTopTrades } from './topTradesService.mjs';
 
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.WALLET_INTEL_TIMEOUT_MS || '8000', 10);
 const DEFAULT_SOLANA_RPC_URL = `${process.env.SOLANA_RPC_URL}?api-key=${process.env.SOLANA_RPC_KEY}` || 'https://api.mainnet-beta.solana.com';
@@ -439,24 +441,42 @@ export class WalletIntelService {
   //#1 перебор токенов для анализа
   async analyzeTopTokens(tokens, onStatusUpdate = null) {
     const analyzed = [];
+    const geckoOhlcv = new GeckoOhlcvService({ timeoutMs: this.timeoutMs });
+
     for (const token of tokens) {
-      if (onStatusUpdate) await onStatusUpdate(`🕵️ Wallet Intel: ${token.symbol || shortAddress(token.address)}…`);
-      const walletIntel = await this.analyzeToken(token, onStatusUpdate);
+      if (onStatusUpdate) await onStatusUpdate(`🕵️ Wallet Intel & TA: ${token.symbol || shortAddress(token.address)}…`);
       
-      // Определение "линии лежачей ликвидности" через книгу ордеров CEX
-      let liquidityClusters = null;
-      try {
-        if (token.symbol) {
-          liquidityClusters = await getLiquidityLine(token.symbol);
-        }
-      } catch (err) {
-        console.warn(`⚠️ LiquidityLine for ${token.symbol}: ${err.message}`);
-      }
+      const [walletIntel, liquidityClusters, topTrades, technicalAnalysis] = await Promise.all([
+        this.analyzeToken(token, onStatusUpdate).catch(err => {
+          console.warn(`⚠️ WalletIntel error for ${token.symbol}:`, err.message);
+          return fallbackIntel(err.message);
+        }),
+        (async () => {
+          if (!token.symbol) return null;
+          try {
+            return await getLiquidityLine(token.symbol);
+          } catch {
+            return null;
+          }
+        })(),
+        getTopTrades(token, token.price).catch(err => {
+          console.warn(`⚠️ TopTrades error for ${token.symbol}:`, err.message);
+          return [];
+        }),
+        geckoOhlcv.analyzeTokenTechnicalAnalysis(token.chain, token.address, token.pairAddress).catch(err => {
+          console.warn(`⚠️ Gecko OHLCV TA error for ${token.symbol}:`, err.message);
+          return { timeframes: {}, overallTrend: 'Neutral', error: err.message };
+        }),
+      ]);
 
-      analyzed.push({ ...token, walletIntel, liquidityClusters });
-      console.log('walletIntel', walletIntel);
+      analyzed.push({
+        ...token,
+        walletIntel,
+        liquidityClusters,
+        topTrades,
+        technicalAnalysis,
+      });
     }
-
 
     return analyzed;
   }

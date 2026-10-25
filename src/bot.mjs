@@ -7,6 +7,7 @@ import {settingsComposer} from './composers/settings.mjs'
 import {autopostingComposer} from './composers/autoposting.mjs'
 import { TelegramSessionService } from './services/telegramSessionService.mjs';
 import { loadUserSettings } from './db/userSettingsService.mjs';
+import { tradeBehaviorAnalysisComposer } from './composers/tradeBehaviorAnalysis.mjs';
 
 // import {aiSignalComposer} from './composers/aiSignalComposer.mjs'
 
@@ -71,6 +72,7 @@ export function createBot(token) {
     await next();
   });
 
+  bot.use(tradeBehaviorAnalysisComposer);
   bot.use(mainMenuComposer);
   bot.use(assetsComposer);
   bot.use(ordersComposer);

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "TradingAI Signal Hub",
+  "version": "0.1.0",
+  "description": "Анализ сигналов TradingAI и безопасный выбор данных со страницы.",
+  "action": { "default_popup": "popup/popup.html", "default_title": "TradingAI Signal Hub" },
+  "background": { "service_worker": "service-worker.js", "type": "module" },
+  "permissions": ["storage", "tabs", "scripting", "debugger", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [{ "matches": ["http://*/*", "https://*/*"], "js": ["content/selector.js"], "run_at": "document_idle" }]
+}
